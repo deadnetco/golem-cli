@@ -1,0 +1,62 @@
+name: release
+
+# Build and publish the golem CLI for all supported platforms whenever a
+# v* tag is pushed. The devcontainer setup.sh downloads
+# golem-linux-{amd64,arm64} from these release assets, so those names are a
+# hard contract — do not rename them.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build all targets
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ldflags="-s -w -X main.version=${VERSION}"
+          build() {
+            GOOS="$1" GOARCH="$2" \
+              go build -trimpath -ldflags "${ldflags}" -o "$3" .
+            echo "built $3"
+          }
+          build linux  amd64 golem-linux-amd64
+          build linux  arm64 golem-linux-arm64
+          build darwin amd64 golem-darwin-amd64
+          build darwin arm64 golem-darwin-arm64
+          build windows amd64 golem-windows-amd64.exe
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          files="golem-linux-amd64 golem-linux-arm64 golem-darwin-amd64 golem-darwin-arm64 golem-windows-amd64.exe"
+          # Self-healing: on a re-run the release already exists, so fall back to uploading/replacing assets.
+          gh release create "$TAG" $files \
+            --title "golem $TAG" \
+            --notes "golem CLI $TAG — the golem control-plane client for builders. Static, CGO-free binaries for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, and windows/amd64. Configure with GOLEM_API_KEY (required Bearer token) and GOLEM_API_URL (optional API base, defaults to https://platform.tools.deadnet.co)." \
+            || gh release upload "$TAG" $files --clobber
