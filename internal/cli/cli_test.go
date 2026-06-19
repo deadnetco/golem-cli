@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/deadnetco/golem-cli/internal/client"
 )
@@ -300,6 +301,40 @@ func TestSecretSetCommand_FromStdin(t *testing.T) {
 	}
 	if rec.body["value"] != "super-secret" {
 		t.Errorf("stdin value = %v, want 'super-secret' (trailing newline trimmed)", rec.body["value"])
+	}
+}
+
+// TestSecretSet_MissingKeyGuardFiresBeforeStdin proves the missing-key guard runs
+// BEFORE stdin is consumed: with no GOLEM_API_KEY, `golem secret set TOK` (value
+// omitted) must return ErrNoAPIKey immediately and NOT block reading from stdin.
+// os.Stdin is pointed at a pipe whose write end is held open and never written —
+// a regression that reads stdin first would block on io.ReadAll, which we catch as
+// a timeout instead of hanging the suite.
+func TestSecretSet_MissingKeyGuardFiresBeforeStdin(t *testing.T) {
+	t.Setenv("GOLEM_API_KEY", "")
+
+	orig := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = orig
+		_ = w.Close() // release any blocked reader on the (failure) path
+		_ = r.Close()
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- Run([]string{"secret", "set", "TOK"}, "v1") }()
+
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, client.ErrNoAPIKey) {
+			t.Fatalf("err = %v, want ErrNoAPIKey (fired before stdin)", runErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("secret set blocked on stdin instead of failing fast on the missing key")
 	}
 }
 

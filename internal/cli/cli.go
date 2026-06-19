@@ -66,16 +66,6 @@ func Run(args []string, version string) error {
 	}
 }
 
-// newClient builds the API client, surfacing the friendly missing-key message.
-func newClient() (*client.Client, error) {
-	c, err := client.New()
-	if err != nil {
-		// ErrNoAPIKey already carries the actionable, friendly message.
-		return nil, err
-	}
-	return c, nil
-}
-
 func ctx() context.Context { return context.Background() }
 
 // --- commands -----------------------------------------------------------------
@@ -84,7 +74,7 @@ func cmdWhoami(args []string) error {
 	if err := noFlags("whoami", args); err != nil {
 		return err
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -106,7 +96,7 @@ func cmdStatus(args []string) error {
 	if err := noFlags("status", args); err != nil {
 		return err
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -130,7 +120,7 @@ func cmdPublish(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -150,7 +140,7 @@ func cmdRestart(args []string) error {
 	if err := noFlags("restart", args); err != nil {
 		return err
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -211,7 +201,7 @@ func configList(args []string) error {
 	if err := noFlags("config list", args); err != nil {
 		return err
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -228,7 +218,7 @@ func configGet(args []string) error {
 		return errors.New("usage: golem config get KEY")
 	}
 	key := args[0]
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -259,7 +249,7 @@ func configSet(args []string, secret bool) error {
 	if !ok || key == "" {
 		return errors.New("expected KEY=VALUE")
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -280,6 +270,13 @@ func secretSet(args []string) error {
 	if key == "" {
 		return errors.New("expected KEY or KEY=VALUE")
 	}
+	// Construct the client FIRST so the missing-key guard fires immediately — an
+	// interactive `golem secret set TOK` with no GOLEM_API_KEY must fail fast,
+	// not block on stdin. Only then read the value from stdin if it wasn't on argv.
+	c, err := client.New()
+	if err != nil {
+		return err
+	}
 	if !hasValue {
 		read, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -288,10 +285,6 @@ func secretSet(args []string) error {
 		// Trim a single trailing newline (the common `echo | golem secret set` case)
 		// but preserve any other whitespace the secret may legitimately contain.
 		value = strings.TrimRight(string(read), "\n")
-	}
-	c, err := newClient()
-	if err != nil {
-		return err
 	}
 	if _, err := c.ConfigSet(ctx(), key, value, true); err != nil {
 		return err
@@ -304,7 +297,7 @@ func configRemove(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: golem config rm KEY")
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -327,7 +320,7 @@ func cmdLogs(args []string) error {
 	default:
 		return fmt.Errorf("unknown stream %q (want console|errors|ci)", *stream)
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
@@ -362,7 +355,7 @@ func cmdSchedules(args []string) error {
 		if err := noFlags("schedules list", rest); err != nil {
 			return err
 		}
-		c, err := newClient()
+		c, err := client.New()
 		if err != nil {
 			return err
 		}
@@ -376,7 +369,7 @@ func cmdSchedules(args []string) error {
 		if err := noFlags("schedules sync", rest); err != nil {
 			return err
 		}
-		c, err := newClient()
+		c, err := client.New()
 		if err != nil {
 			return err
 		}
@@ -398,7 +391,7 @@ func cmdOpen(args []string) error {
 	if err := noFlags("open", args); err != nil {
 		return err
 	}
-	c, err := newClient()
+	c, err := client.New()
 	if err != nil {
 		return err
 	}
