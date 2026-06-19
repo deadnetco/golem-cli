@@ -1,0 +1,10 @@
+# Build output
+/golem
+/dist/
+*.exe
+
+# Go
+/vendor/
+
+# Editor / OS
+.DS_Store
