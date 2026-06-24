@@ -443,7 +443,8 @@ func TestWebhooksListCommand(t *testing.T) {
 	if rec.method != "GET" || rec.path != "/api/v1/webhooks" {
 		t.Errorf("got %s %s", rec.method, rec.path)
 	}
-	if !strings.Contains(out, "Stripe") || !strings.Contains(out, "https://hooks.deadnet.co/tok1") {
+	// surfaces the label, the public URL, AND the bare id (needed for `webhooks rm`)
+	if !strings.Contains(out, "Stripe") || !strings.Contains(out, "https://hooks.deadnet.co/tok1") || !strings.Contains(out, "id:  tok1") {
 		t.Errorf("output = %q", out)
 	}
 }
@@ -502,6 +503,21 @@ func TestWebhooksRemoveCommand(t *testing.T) {
 	}
 	if !strings.Contains(out, "removed") {
 		t.Errorf("output = %q", out)
+	}
+}
+
+func TestWebhooksRemoveCommand_ArgCount(t *testing.T) {
+	// rm requires exactly one id; with none it errors before any call.
+	called := false
+	_, _, err := runCmd(t, func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, `{}`)
+	}, "webhooks", "rm")
+	if err == nil {
+		t.Fatal("expected an error for missing ID")
+	}
+	if called {
+		t.Error("should not have made a call with no id")
 	}
 }
 

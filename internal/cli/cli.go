@@ -410,7 +410,7 @@ func cmdWebhooks(args []string) error {
 	case "add":
 		// `golem webhooks add LABEL TARGET_PATH` — quote a multi-word label.
 		if len(rest) != 2 {
-			return errors.New("usage: golem webhooks add LABEL TARGET_PATH  (e.g. golem webhooks add Stripe /webhooks/stripe)")
+			return errors.New(`usage: golem webhooks add LABEL TARGET_PATH  (quote a multi-word LABEL; e.g. golem webhooks add "Payment events" /webhooks/stripe)`)
 		}
 		c, err := client.New()
 		if err != nil {
@@ -547,7 +547,8 @@ func printWebhooks(rows []client.WebhookRow) {
 			state = "disabled"
 		}
 		fmt.Printf("%s  →  %s  [%s]\n", r.Label, r.TargetPath, state)
-		fmt.Printf("  %s\n", r.URL)
+		fmt.Printf("  url: %s\n", r.URL)
+		fmt.Printf("  id:  %s   (golem webhooks rm %s)\n", r.ID, r.ID)
 	}
 }
 
