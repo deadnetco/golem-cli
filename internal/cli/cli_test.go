@@ -433,6 +433,101 @@ func TestSchedulesSyncCommand(t *testing.T) {
 	}
 }
 
+func TestWebhooksListCommand(t *testing.T) {
+	rec, out, err := runCmd(t,
+		jsonResp(200, `[{"id":"tok1","appId":"a","targetPath":"/webhooks/stripe","label":"Stripe","enabled":true,"createdAt":"2026-06-24T00:00:00Z","url":"https://hooks.deadnet.co/tok1"}]`),
+		"webhooks", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.method != "GET" || rec.path != "/api/v1/webhooks" {
+		t.Errorf("got %s %s", rec.method, rec.path)
+	}
+	// surfaces the label, the public URL, AND the bare id (needed for `webhooks rm`)
+	if !strings.Contains(out, "Stripe") || !strings.Contains(out, "https://hooks.deadnet.co/tok1") || !strings.Contains(out, "id:  tok1") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestWebhooksListCommand_Empty(t *testing.T) {
+	_, out, err := runCmd(t, jsonResp(200, `[]`), "webhooks", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "no webhook endpoints") {
+		t.Errorf("output = %q, want the empty-state line", out)
+	}
+}
+
+func TestWebhooksAddCommand(t *testing.T) {
+	rec, out, err := runCmd(t,
+		jsonResp(200, `{"ok":true,"id":"tok2","url":"https://hooks.deadnet.co/tok2"}`),
+		"webhooks", "add", "Stripe", "/webhooks/stripe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.method != "POST" || rec.path != "/api/v1/webhooks" {
+		t.Errorf("got %s %s", rec.method, rec.path)
+	}
+	if rec.body["label"] != "Stripe" || rec.body["targetPath"] != "/webhooks/stripe" {
+		t.Errorf("body = %+v", rec.body)
+	}
+	if !strings.Contains(out, "https://hooks.deadnet.co/tok2") {
+		t.Errorf("output = %q, want the created URL", out)
+	}
+}
+
+func TestWebhooksAddCommand_ArgCount(t *testing.T) {
+	// add requires exactly LABEL + PATH; a missing path errors before any call.
+	called := false
+	_, _, err := runCmd(t, func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, `{}`)
+	}, "webhooks", "add", "OnlyLabel")
+	if err == nil {
+		t.Fatal("expected an error for missing TARGET_PATH")
+	}
+	if called {
+		t.Error("should not have made a call with bad arg count")
+	}
+}
+
+func TestWebhooksRemoveCommand(t *testing.T) {
+	rec, out, err := runCmd(t, jsonResp(200, `{"ok":true,"removed":true}`),
+		"webhooks", "rm", "tok9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.method != "DELETE" || rec.path != "/api/v1/webhooks" || rec.query != "id=tok9" {
+		t.Errorf("got %s %s?%s", rec.method, rec.path, rec.query)
+	}
+	if !strings.Contains(out, "removed") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestWebhooksRemoveCommand_ArgCount(t *testing.T) {
+	// rm requires exactly one id; with none it errors before any call.
+	called := false
+	_, _, err := runCmd(t, func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, `{}`)
+	}, "webhooks", "rm")
+	if err == nil {
+		t.Fatal("expected an error for missing ID")
+	}
+	if called {
+		t.Error("should not have made a call with no id")
+	}
+}
+
+func TestWebhooksCommand_NoSub(t *testing.T) {
+	_, _, err := runCmd(t, jsonResp(200, `{}`), "webhooks")
+	if err == nil {
+		t.Fatal("expected a usage error when no webhooks subcommand is given")
+	}
+}
+
 func TestOpenCommand_PrintsURL(t *testing.T) {
 	t.Setenv("GOLEM_NO_BROWSER", "1") // don't actually spawn a browser in CI/dev
 	rec, out, err := runCmd(t,

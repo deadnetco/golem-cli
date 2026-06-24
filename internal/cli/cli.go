@@ -58,6 +58,8 @@ func Run(args []string, version string) error {
 		return cmdLogs(rest)
 	case "schedules":
 		return cmdSchedules(rest)
+	case "webhooks":
+		return cmdWebhooks(rest)
 	case "open":
 		return cmdOpen(rest)
 	default:
@@ -385,6 +387,62 @@ func cmdSchedules(args []string) error {
 	}
 }
 
+func cmdWebhooks(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: golem webhooks <list|add|rm>")
+	}
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "list":
+		if err := noFlags("webhooks list", rest); err != nil {
+			return err
+		}
+		c, err := client.New()
+		if err != nil {
+			return err
+		}
+		rows, err := c.WebhooksList(ctx())
+		if err != nil {
+			return err
+		}
+		printWebhooks(rows)
+		return nil
+	case "add":
+		// `golem webhooks add LABEL TARGET_PATH` — quote a multi-word label.
+		if len(rest) != 2 {
+			return errors.New(`usage: golem webhooks add LABEL TARGET_PATH  (quote a multi-word LABEL; e.g. golem webhooks add "Payment events" /webhooks/stripe)`)
+		}
+		c, err := client.New()
+		if err != nil {
+			return err
+		}
+		r, err := c.WebhooksAdd(ctx(), rest[0], rest[1])
+		if err != nil {
+			return err
+		}
+		fmt.Println("webhook endpoint created. Point your provider (Stripe, GitHub, …) at:")
+		fmt.Printf("  %s\n", r.URL)
+		fmt.Println("(this URL is the credential — keep it secret. golem forwards POSTs here to your app,")
+		fmt.Println(" HMAC-signed with GOLEM_WEBHOOK_SECRET so your app can verify them.)")
+		return nil
+	case "rm":
+		if len(rest) != 1 {
+			return errors.New("usage: golem webhooks rm ID")
+		}
+		c, err := client.New()
+		if err != nil {
+			return err
+		}
+		if _, err := c.WebhooksRemove(ctx(), rest[0]); err != nil {
+			return err
+		}
+		fmt.Println("webhook endpoint removed — its URL will no longer reach your app.")
+		return nil
+	default:
+		return fmt.Errorf("unknown webhooks subcommand %q (want list|add|rm)", sub)
+	}
+}
+
 // cmdOpen prints the app's public URL and best-effort opens it in a browser.
 // It uses whoami to resolve the slug (the only API call it makes).
 func cmdOpen(args []string) error {
@@ -478,6 +536,22 @@ func printSchedules(rows []client.ScheduleRow) {
 	}
 }
 
+func printWebhooks(rows []client.WebhookRow) {
+	if len(rows) == 0 {
+		fmt.Println("(no webhook endpoints — `golem webhooks add LABEL /path` to create one)")
+		return
+	}
+	for _, r := range rows {
+		state := "enabled"
+		if !r.Enabled {
+			state = "disabled"
+		}
+		fmt.Printf("%s  →  %s  [%s]\n", r.Label, r.TargetPath, state)
+		fmt.Printf("  url: %s\n", r.URL)
+		fmt.Printf("  id:  %s   (golem webhooks rm %s)\n", r.ID, r.ID)
+	}
+}
+
 func printLogStream(res *client.LogStreamResult) {
 	switch res.Status {
 	case "ok":
@@ -544,6 +618,9 @@ Usage:
   golem logs [--stream S] [--follow]  snapshot logs; S = console|errors|ci (default console)
   golem schedules list              list golem.json-declared schedules
   golem schedules sync              reconcile golem.json @ HEAD
+  golem webhooks list               list inbound webhook endpoints (with their URLs)
+  golem webhooks add LABEL PATH     create an endpoint; prints the public URL to give a provider
+  golem webhooks rm ID              remove an endpoint
   golem open                        print + open https://<slug>.tools.deadnet.co
   golem version                     print the CLI version
   golem help                        this help
