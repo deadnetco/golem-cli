@@ -58,6 +58,9 @@ key; ask an admin to reissue, or restart the Codespace
 | `golem logs [--stream console\|errors\|ci] [--follow]` | `GET /api/v1/logs?stream=…` | default `console`; **`--follow` polls the snapshot** (see below) |
 | `golem schedules list` | `GET /api/v1/schedules` | golem.json-declared schedules |
 | `golem schedules sync` | `POST /api/v1/schedules` | reconcile `golem.json` @ HEAD (build-free) |
+| `golem webhooks list` | `GET /api/v1/webhooks` | inbound webhook endpoints, each with its public URL |
+| `golem webhooks add LABEL PATH` | `POST /api/v1/webhooks` | create an endpoint; returns the `hooks.deadnet.co/<id>` URL |
+| `golem webhooks rm ID` | `DELETE /api/v1/webhooks?id=ID` | remove an endpoint (scoped to this app) |
 | `golem restart` | `POST /api/v1/restart` | best-effort roll of the app's machine |
 | `golem open` | `GET /api/v1/whoami` (for the slug) | prints + `open`/`xdg-open`s `https://<slug>.tools.deadnet.co` |
 | `golem version` | (none) | prints the stamped version |
@@ -88,6 +91,7 @@ golem secret set OPENAI_KEY         # prompts via stdin
 golem publish                       # apply staged config + rebuild if code moved
 golem logs --stream errors
 golem schedules sync
+golem webhooks add Stripe /webhooks/stripe   # prints the URL to paste into Stripe
 ```
 
 ## Project layout

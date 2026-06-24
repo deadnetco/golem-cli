@@ -77,6 +77,31 @@ type ScheduleSyncResult struct {
 	Removed  int  `json:"removed"`
 }
 
+// WebhookRow is one element of GET /api/v1/webhooks (an app_webhook_endpoints row plus the
+// computed public URL). `id` is the unguessable URL token; `url` is HOOKS_BASE_URL/<id>.
+type WebhookRow struct {
+	ID         string `json:"id"`
+	AppID      string `json:"appId"`
+	TargetPath string `json:"targetPath"`
+	Label      string `json:"label"`
+	Enabled    bool   `json:"enabled"`
+	CreatedAt  string `json:"createdAt"`
+	URL        string `json:"url"`
+}
+
+// WebhookCreateResult is POST /api/v1/webhooks ({ ok, id, url }).
+type WebhookCreateResult struct {
+	OK  bool   `json:"ok"`
+	ID  string `json:"id"`
+	URL string `json:"url"`
+}
+
+// WebhookRemoveResult is DELETE /api/v1/webhooks ({ ok, removed }).
+type WebhookRemoveResult struct {
+	OK      bool `json:"ok"`
+	Removed bool `json:"removed"`
+}
+
 // LogStreamResult is GET /api/v1/logs — the ok/empty/disabled/error discriminated
 // union (src/lib/log-streams.ts). Rows are left as raw JSON so any stream's row
 // shape renders without the CLI needing per-stream structs.
@@ -141,4 +166,23 @@ func (c *Client) SchedulesSync(ctx context.Context) (*ScheduleSyncResult, error)
 func (c *Client) Logs(ctx context.Context, stream string) (*LogStreamResult, error) {
 	var r LogStreamResult
 	return &r, c.Do(ctx, "GET", "logs?stream="+Query(stream), nil, &r)
+}
+
+// WebhooksList lists the app's inbound webhook endpoints (newest-first), each with its URL.
+func (c *Client) WebhooksList(ctx context.Context) ([]WebhookRow, error) {
+	var rows []WebhookRow
+	return rows, c.Do(ctx, "GET", "webhooks", nil, &rows)
+}
+
+// WebhooksAdd creates an endpoint; the response carries the minted id + public URL.
+func (c *Client) WebhooksAdd(ctx context.Context, label, targetPath string) (*WebhookCreateResult, error) {
+	var r WebhookCreateResult
+	body := map[string]any{"label": label, "targetPath": targetPath}
+	return &r, c.Do(ctx, "POST", "webhooks", body, &r)
+}
+
+// WebhooksRemove deletes the endpoint with the given id (scoped to this app server-side).
+func (c *Client) WebhooksRemove(ctx context.Context, id string) (*WebhookRemoveResult, error) {
+	var r WebhookRemoveResult
+	return &r, c.Do(ctx, "DELETE", "webhooks?id="+Query(id), nil, &r)
 }

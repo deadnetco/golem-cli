@@ -306,3 +306,49 @@ func TestLogs_Disabled(t *testing.T) {
 		t.Errorf("result = %+v", r)
 	}
 }
+
+func TestWebhooksList(t *testing.T) {
+	c, cap := newTestClient(t, jsonHandler(200,
+		`[{"id":"tok1","appId":"a","targetPath":"/webhooks/stripe","label":"Stripe","enabled":true,"createdAt":"2026-06-24T00:00:00Z","url":"https://hooks.deadnet.co/tok1"}]`))
+	rows, err := c.WebhooksList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap.method != "GET" || cap.path != "/api/v1/webhooks" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if len(rows) != 1 || rows[0].Label != "Stripe" || rows[0].URL != "https://hooks.deadnet.co/tok1" || !rows[0].Enabled {
+		t.Errorf("rows = %+v", rows)
+	}
+}
+
+func TestWebhooksAdd(t *testing.T) {
+	c, cap := newTestClient(t, jsonHandler(200,
+		`{"ok":true,"id":"tok2","url":"https://hooks.deadnet.co/tok2"}`))
+	r, err := c.WebhooksAdd(context.Background(), "Stripe", "/webhooks/stripe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap.method != "POST" || cap.path != "/api/v1/webhooks" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if cap.body["label"] != "Stripe" || cap.body["targetPath"] != "/webhooks/stripe" {
+		t.Errorf("body = %+v", cap.body)
+	}
+	if !r.OK || r.ID != "tok2" || r.URL != "https://hooks.deadnet.co/tok2" {
+		t.Errorf("result = %+v", r)
+	}
+}
+
+func TestWebhooksRemove_QueryParam(t *testing.T) {
+	c, cap := newTestClient(t, jsonHandler(200, `{"ok":true,"removed":true}`))
+	if _, err := c.WebhooksRemove(context.Background(), "tok 3"); err != nil {
+		t.Fatal(err)
+	}
+	if cap.method != "DELETE" || cap.path != "/api/v1/webhooks" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if cap.query != "id=tok+3" {
+		t.Errorf("query = %q, want id=tok+3 (escaped)", cap.query)
+	}
+}
