@@ -63,8 +63,23 @@ key; ask an admin to reissue, or restart the Codespace
 | `golem webhooks rm ID` | `DELETE /api/v1/webhooks?id=ID` | remove an endpoint (scoped to this app) |
 | `golem restart` | `POST /api/v1/restart` | best-effort roll of the app's machine |
 | `golem open` | `GET /api/v1/whoami` (for the slug) | prints + `open`/`xdg-open`s `https://<slug>.tools.deadnet.co` |
+| `golem upgrade` | (none — GitHub releases) | replace the running binary with the latest release (sudo-escalates if its dir is root-owned) |
 | `golem version` | (none) | prints the stamped version |
 | `golem help` | (none) | usage |
+
+### Update notices
+
+On an interactive run, `golem` checks (at most ~once/day, cached in `~/.cache/golem/version.json`)
+whether a newer release exists and prints a one-line notice to **stderr** when you're behind:
+
+```
+golem v0.1.3 is available (you have v0.1.2) — run `golem upgrade` to update.
+```
+
+The check uses the `releases/latest` redirect (no GitHub API → no rate limit), never blocks output
+(stderr only, skipped when stdout isn't a TTY), and is disabled by `GOLEM_NO_UPDATE_CHECK`. In the
+starter dev containers the CLI also auto-refreshes to latest on container start, so the notice is
+mainly a heads-up for a new release mid-session.
 
 ### A note on `logs --follow`
 

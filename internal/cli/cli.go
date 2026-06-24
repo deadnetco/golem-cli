@@ -31,8 +31,16 @@ func Run(args []string, version string) error {
 		usage()
 		return errors.New("a subcommand is required (run `golem help`)")
 	}
-
 	cmd, rest := args[0], args[1:]
+	err := dispatch(cmd, rest, version)
+	// On a clean run, best-effort nudge if a newer release is out (stderr, TTY-only, cached ~1/day).
+	if err == nil {
+		maybePrintUpdateNotice(version, cmd)
+	}
+	return err
+}
+
+func dispatch(cmd string, rest []string, version string) error {
 	switch cmd {
 	case "help", "-h", "--help":
 		usage()
@@ -60,6 +68,8 @@ func Run(args []string, version string) error {
 		return cmdSchedules(rest)
 	case "webhooks":
 		return cmdWebhooks(rest)
+	case "upgrade":
+		return cmdUpgrade(rest, version)
 	case "open":
 		return cmdOpen(rest)
 	default:
@@ -622,11 +632,13 @@ Usage:
   golem webhooks add LABEL PATH     create an endpoint; prints the public URL to give a provider
   golem webhooks rm ID              remove an endpoint
   golem open                        print + open https://<slug>.tools.deadnet.co
+  golem upgrade                     update golem to the latest release
   golem version                     print the CLI version
   golem help                        this help
 
 Environment:
-  GOLEM_API_KEY   (required) Bearer token for every API call
-  GOLEM_API_URL   (optional) API base, default https://platform.tools.deadnet.co
+  GOLEM_API_KEY          (required) Bearer token for every API call
+  GOLEM_API_URL          (optional) API base, default https://platform.tools.deadnet.co
+  GOLEM_NO_UPDATE_CHECK  (optional) set to disable the "new version available" notice
 `)
 }
