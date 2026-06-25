@@ -102,6 +102,18 @@ type WebhookRemoveResult struct {
 	Removed bool `json:"removed"`
 }
 
+// EnvEntry is one element of GET /api/v1/env — an effective dev value (dev
+// override if set, else the prod non-secret value; never a prod secret).
+type EnvEntry struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// EnvResult is GET /api/v1/env ({ env: [{key,value}] }).
+type EnvResult struct {
+	Env []EnvEntry `json:"env"`
+}
+
 // LogStreamResult is GET /api/v1/logs — the ok/empty/disabled/error discriminated
 // union (src/lib/log-streams.ts). Rows are left as raw JSON so any stream's row
 // shape renders without the CLI needing per-stream structs.
@@ -150,6 +162,12 @@ func (c *Client) ConfigSet(ctx context.Context, key, value string, secret bool) 
 func (c *Client) ConfigRemove(ctx context.Context, key string) (*StageResult, error) {
 	var r StageResult
 	return &r, c.Do(ctx, "DELETE", "config?key="+Query(key), nil, &r)
+}
+
+// Env fetches the app's effective dev values (GET /api/v1/env).
+func (c *Client) Env(ctx context.Context) (*EnvResult, error) {
+	var r EnvResult
+	return &r, c.Do(ctx, "GET", "env", nil, &r)
 }
 
 func (c *Client) SchedulesList(ctx context.Context) ([]ScheduleRow, error) {

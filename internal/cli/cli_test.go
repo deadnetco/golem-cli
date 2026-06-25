@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -542,6 +543,97 @@ func TestOpenCommand_PrintsURL(t *testing.T) {
 	}
 	if !strings.Contains(out, "https://alltest.tools.deadnet.co") {
 		t.Errorf("output = %q, want the public URL", out)
+	}
+}
+
+func TestDevPullCommand(t *testing.T) {
+	// .env.golem must land in a throwaway dir, not the repo tree.
+	t.Chdir(t.TempDir())
+
+	rec, _, err := runCmd(t,
+		jsonResp(200, `{"env":[{"key":"FOO","value":"bar"},{"key":"SLACK_WEBHOOK_URL","value":"dev-hook"}]}`),
+		"dev", "pull")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.method != "GET" || rec.path != "/api/v1/env" {
+		t.Errorf("got %s %s, want GET /api/v1/env", rec.method, rec.path)
+	}
+	if rec.auth != "Bearer test-key" {
+		t.Errorf("auth = %q, want Bearer test-key", rec.auth)
+	}
+	data, err := os.ReadFile(".env.golem")
+	if err != nil {
+		t.Fatalf("read .env.golem: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "FOO='bar'\n") {
+		t.Errorf(".env.golem = %q, missing FOO='bar'", got)
+	}
+	if !strings.Contains(got, "SLACK_WEBHOOK_URL='dev-hook'\n") {
+		t.Errorf(".env.golem = %q, missing SLACK_WEBHOOK_URL='dev-hook'", got)
+	}
+	// 0600: dev secrets on disk must not be world-readable.
+	info, err := os.Stat(".env.golem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf(".env.golem perm = %o, want 600", perm)
+	}
+}
+
+func TestDevPull_MissingKeyFailsFast(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("GOLEM_API_KEY", "")
+
+	err := Run([]string{"dev", "pull"}, "v1")
+	if err == nil {
+		t.Fatal("expected an error when GOLEM_API_KEY is unset")
+	}
+	if !errors.Is(err, client.ErrNoAPIKey) {
+		t.Fatalf("err = %v, want ErrNoAPIKey", err)
+	}
+	if _, statErr := os.Stat(".env.golem"); !os.IsNotExist(statErr) {
+		t.Error(".env.golem should not be written when the key is missing")
+	}
+}
+
+// TestDevPull_EscapingRoundTrip arms the API to return a value containing an
+// apostrophe, a `$`, and a newline, then asserts the written .env.golem
+// round-trips: sourcing it under `set -a; . .env.golem; set +a` yields exactly
+// the original value (single-quoted, with embedded single-quotes escaped as
+// '\''). This proves the file can't corrupt or shell-inject when sourced.
+func TestDevPull_EscapingRoundTrip(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX sh available to verify the round-trip")
+	}
+	t.Chdir(t.TempDir())
+
+	const raw = "it's $HOME\nline2" // apostrophe + dollar + newline
+	body, err := json.Marshal(map[string]any{
+		"env": []map[string]string{{"key": "TRICKY", "value": raw}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = runCmd(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}, "dev", "pull")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Source the file the way start-app.sh does, then echo the value back out so
+	// we compare the SOURCED result to the original input — not just the file text.
+	out, err := exec.Command("sh", "-c",
+		`set -a; . ./.env.golem; set +a; printf '%s' "$TRICKY"`).Output()
+	if err != nil {
+		t.Fatalf("sourcing .env.golem failed: %v", err)
+	}
+	if string(out) != raw {
+		t.Errorf("sourced TRICKY = %q, want %q (escaping round-trip failed)", string(out), raw)
 	}
 }
 
