@@ -62,6 +62,8 @@ func dispatch(cmd string, rest []string, version string) error {
 		return cmdEnv(rest)
 	case "secret":
 		return cmdSecret(rest)
+	case "dev":
+		return cmdDev(rest)
 	case "logs":
 		return cmdLogs(rest)
 	case "schedules":
@@ -317,6 +319,82 @@ func configRemove(args []string) error {
 		return err
 	}
 	fmt.Printf("%s removal staged — run `golem publish` to apply.\n", args[0])
+	return nil
+}
+
+// cmdDev dispatches the `dev` command. Today it has one subcommand, `pull`,
+// which hydrates the managed .env.golem from /api/v1/env so a Codespace boots
+// with the app's effective dev values.
+func cmdDev(args []string) error {
+	if len(args) == 0 || args[0] != "pull" {
+		return errors.New("usage: golem dev pull")
+	}
+	if err := noFlags("dev pull", args[1:]); err != nil {
+		return err
+	}
+	return devPull()
+}
+
+// devEnvFile is the managed dev-values file written by `golem dev pull` and
+// sourced by the template's start-app.sh.
+const devEnvFile = ".env.golem"
+
+// devPull fetches the app's effective dev values and atomically rewrites
+// .env.golem with single-quoted, shell-safe KEY='value' lines.
+//
+// Error classes are deliberate:
+//   - A missing GOLEM_API_KEY is a fail-fast error (client.New returns
+//     ErrNoAPIKey) — NOT swallowed, so a manual `golem dev pull` surfaces it.
+//   - Any fetch/parse/write failure prints a loud banner and RETURNS the error,
+//     leaving any existing .env.golem untouched. Boot non-fatality is the
+//     SHELL's job: start-app.sh runs `golem dev pull || true`.
+func devPull() error {
+	c, err := client.New()
+	if err != nil {
+		return err // missing key → fail fast (ErrNoAPIKey)
+	}
+	res, err := c.Env(ctx())
+	if err != nil {
+		return devPullFailed(err)
+	}
+	if err := writeDevEnvFile(res.Env); err != nil {
+		return devPullFailed(err)
+	}
+	fmt.Printf("pulled %d dev value(s) into %s\n", len(res.Env), devEnvFile)
+	return nil
+}
+
+// devPullFailed prints the cached-fallback banner and returns the underlying
+// error unchanged (the shell's `|| true` is what makes boot non-fatal).
+func devPullFailed(err error) error {
+	fmt.Fprintln(os.Stderr,
+		"Couldn't refresh secrets from golem -- using cached .env.golem if present. Run `golem dev pull` to retry.")
+	return err
+}
+
+// writeDevEnvFile renders the entries as single-quoted, escaped KEY='value'
+// lines and atomically replaces .env.golem (0600). A value is arbitrary text up
+// to 32KB, so a raw newline/$/quote/backtick would corrupt the file or
+// shell-inject when sourced — single-quoting and escaping any embedded single
+// quote as '\'' makes the file safe under `set -a; . .env.golem; set +a`. The
+// file is written via a tmp + os.Rename so a partial write never clobbers a
+// good cached file.
+func writeDevEnvFile(entries []client.EnvEntry) error {
+	var b strings.Builder
+	for _, e := range entries {
+		b.WriteString(e.Key)
+		b.WriteString("='")
+		b.WriteString(strings.ReplaceAll(e.Value, "'", `'\''`))
+		b.WriteString("'\n")
+	}
+	tmp := devEnvFile + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, devEnvFile); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename %s -> %s: %w", tmp, devEnvFile, err)
+	}
 	return nil
 }
 
@@ -625,6 +703,7 @@ Usage:
   golem env set KEY=VALUE           alias of 'config set'
   golem secret set KEY[=VALUE]      stage a secret (value read from stdin if omitted)
   golem secret rm KEY               stage a secret removal
+  golem dev pull                    hydrate .env.golem with this app's dev values
   golem logs [--stream S] [--follow]  snapshot logs; S = console|errors|ci (default console)
   golem schedules list              list golem.json-declared schedules
   golem schedules sync              reconcile golem.json @ HEAD
