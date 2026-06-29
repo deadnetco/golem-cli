@@ -13,7 +13,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,6 +133,7 @@ func cmdStatus(args []string) error {
 func cmdPublish(args []string) error {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	force := fs.Bool("force", false, "rebuild even if the repo HEAD matches the last built image")
+	noWait := fs.Bool("no-wait", false, "return immediately without following the publish")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -142,12 +145,85 @@ func cmdPublish(args []string) error {
 	if err != nil {
 		return err
 	}
-	if r.Publishing {
-		fmt.Println("publishing… (this can take several minutes — run `golem status` to check progress)")
-	} else {
+	if !r.Publishing {
 		fmt.Println("publish requested.")
+		return nil
 	}
-	return nil
+	if *noWait {
+		fmt.Println("publishing… (run `golem status` to check progress)")
+		return nil
+	}
+	fmt.Println("publishing…")
+	return followPublish(c)
+}
+
+// followPublish polls the app's newest publish run until it reaches a terminal state,
+// printing phase transitions as they happen. A failed/blocked/interrupted run prints
+// its error (and the captured build-output tail) and returns a non-nil error so the
+// process exits non-zero. Ctrl-C stops following without cancelling the server-side
+// publish. The poll interval is overridable via GOLEM_PUBLISH_POLL_MS (used by tests).
+func followPublish(c *client.Client) error {
+	pollMS := 3000
+	if v := os.Getenv("GOLEM_PUBLISH_POLL_MS"); v != "" {
+		if n, e := strconv.Atoi(v); e == nil && n > 0 {
+			pollMS = n
+		}
+	}
+	cctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	deadline := time.Now().Add(45 * time.Minute)
+	seen := map[string]string{} // phase key → last-printed status
+
+	for {
+		runs, err := c.Runs(cctx, 1)
+		if err != nil {
+			if cctx.Err() != nil {
+				fmt.Println("\nstopped following — the publish continues; run `golem status` to check.")
+				return nil
+			}
+			return err
+		}
+		if len(runs) > 0 {
+			run := runs[0]
+			for _, p := range run.Phases {
+				if seen[p.Key] != p.Status && (p.Status == "done" || p.Status == "failed" || p.Status == "skipped") {
+					seen[p.Key] = p.Status
+					mark := "✓"
+					if p.Status == "failed" {
+						mark = "✗"
+					} else if p.Status == "skipped" {
+						mark = "–"
+					}
+					fmt.Printf("  %s %s\n", p.Key, mark)
+				}
+			}
+			switch run.Status {
+			case "succeeded":
+				fmt.Println("published.")
+				return nil
+			case "failed", "blocked", "interrupted":
+				if run.Error != "" {
+					fmt.Printf("\npublish %s: %s\n", run.Status, run.Error)
+				} else {
+					fmt.Printf("\npublish %s.\n", run.Status)
+				}
+				if run.BuildError != "" {
+					fmt.Printf("\nBuild output:\n%s\n", run.BuildError)
+				}
+				return fmt.Errorf("publish %s", run.Status)
+			}
+		}
+		if time.Now().After(deadline) {
+			fmt.Println("\nstill publishing after 45m — run `golem status` to check.")
+			return nil
+		}
+		select {
+		case <-cctx.Done():
+			fmt.Println("\nstopped following — the publish continues; run `golem status` to check.")
+			return nil
+		case <-time.After(time.Duration(pollMS) * time.Millisecond):
+		}
+	}
 }
 
 func cmdRestart(args []string) error {
@@ -694,7 +770,7 @@ func usage() {
 Usage:
   golem whoami                      who am I + which app this key authorizes
   golem status                      publish state (config-dirty, code-dirty, publishing)
-  golem publish [--force]           request a publish (rebuild + reconcile config)
+  golem publish [--force] [--no-wait]  publish (follows to completion; --no-wait returns immediately)
   golem restart                     best-effort roll the app's machine
   golem config list                 list config entries (secret values never shown)
   golem config get KEY              print one entry
