@@ -184,6 +184,25 @@ func TestPublish_BodyAndForce(t *testing.T) {
 	}
 }
 
+func TestRuns(t *testing.T) {
+	c, cap := newTestClient(t, jsonHandler(200, `{"runs":[
+		{"id":"r1","status":"failed","error":"build failed (exit 1)","buildError":"webhook.ts:168 ERROR","phases":[{"key":"building","status":"failed"}],"builtSha":"","startedAt":"2026-06-29T09:45:00Z","finishedAt":"2026-06-29T09:48:00Z","durationMs":180000}
+	]}`))
+	runs, err := c.Runs(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("Runs: %v", err)
+	}
+	if cap.method != "GET" || cap.path != "/api/v1/publish" || cap.query != "limit=1" {
+		t.Fatalf("unexpected request: %s %s?%s", cap.method, cap.path, cap.query)
+	}
+	if len(runs) != 1 || runs[0].Status != "failed" || runs[0].BuildError != "webhook.ts:168 ERROR" {
+		t.Fatalf("unexpected runs: %+v", runs)
+	}
+	if len(runs[0].Phases) != 1 || runs[0].Phases[0].Key != "building" {
+		t.Fatalf("unexpected phases: %+v", runs[0].Phases)
+	}
+}
+
 func TestRestart(t *testing.T) {
 	c, cap := newTestClient(t, jsonHandler(200, `{"ok":true,"rolled":true}`))
 	r, err := c.Restart(context.Background())

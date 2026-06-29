@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 // The response shapes below mirror golem-cp's src/app/api/v1/*/route.ts exactly.
@@ -31,6 +32,31 @@ type Status struct {
 type PublishResult struct {
 	OK         bool `json:"ok"`
 	Publishing bool `json:"publishing"`
+}
+
+// PublishPhase is one entry of a publish run's phases array (PUBLISH_PHASES order).
+type PublishPhase struct {
+	Key        string `json:"key"`
+	Status     string `json:"status"` // pending|running|done|skipped|failed
+	StartedAt  string `json:"startedAt"`
+	FinishedAt string `json:"finishedAt"`
+}
+
+// PublishRun is one element of GET /api/v1/publish.
+type PublishRun struct {
+	ID         string         `json:"id"`
+	Status     string         `json:"status"` // pending|running|succeeded|failed|blocked|interrupted
+	Phases     []PublishPhase `json:"phases"`
+	Error      string         `json:"error"`
+	BuildError string         `json:"buildError"`
+	BuiltSha   string         `json:"builtSha"`
+	StartedAt  string         `json:"startedAt"`
+	FinishedAt string         `json:"finishedAt"`
+	DurationMs *int           `json:"durationMs"`
+}
+
+type publishRunsResponse struct {
+	Runs []PublishRun `json:"runs"`
 }
 
 // RestartResult is POST /api/v1/restart.
@@ -139,6 +165,12 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 func (c *Client) Publish(ctx context.Context, force bool) (*PublishResult, error) {
 	var r PublishResult
 	return &r, c.Do(ctx, "POST", "publish", map[string]bool{"force": force}, &r)
+}
+
+// Runs returns the app's newest publish runs (GET /api/v1/publish?limit=N), newest-first.
+func (c *Client) Runs(ctx context.Context, limit int) ([]PublishRun, error) {
+	var resp publishRunsResponse
+	return resp.Runs, c.Do(ctx, "GET", fmt.Sprintf("publish?limit=%d", limit), nil, &resp)
 }
 
 func (c *Client) Restart(ctx context.Context) (*RestartResult, error) {

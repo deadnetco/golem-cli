@@ -155,8 +155,10 @@ func TestStatusCommand(t *testing.T) {
 }
 
 func TestPublishCommand_Force(t *testing.T) {
+	// --no-wait keeps the assertion on the POST request shape without entering the
+	// follow loop (which a single static handler can't terminate).
 	rec, out, err := runCmd(t, jsonResp(200, `{"ok":true,"publishing":true}`),
-		"publish", "--force")
+		"publish", "--force", "--no-wait")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,12 +174,47 @@ func TestPublishCommand_Force(t *testing.T) {
 }
 
 func TestPublishCommand_DefaultNotForced(t *testing.T) {
-	rec, _, err := runCmd(t, jsonResp(200, `{"ok":true,"publishing":true}`), "publish")
+	rec, _, err := runCmd(t, jsonResp(200, `{"ok":true,"publishing":true}`), "publish", "--no-wait")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rec.body["force"] != false {
 		t.Errorf("force = %v, want false", rec.body["force"])
+	}
+}
+
+// TestPublishFollow_FailedPrintsBuildError scripts POST publish → {publishing:true},
+// then GET publish?limit=1 → a terminal failed run carrying a buildError tail. The
+// default (follow) path must poll the run, print the error + build-output tail, and
+// return a non-nil error so the process exits non-zero.
+func TestPublishFollow_FailedPrintsBuildError(t *testing.T) {
+	t.Setenv("GOLEM_PUBLISH_POLL_MS", "1") // fast poll for the test
+	_, out, err := runCmd(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `{"ok":true,"publishing":true}`)
+			return
+		}
+		// GET /api/v1/publish?limit=1 → terminal failed run
+		_, _ = io.WriteString(w, `{"runs":[{"id":"r1","status":"failed","error":"build failed (exit 1)","buildError":"webhook.ts:168:6\nERROR: Cannot use \"||\" with \"??\"","phases":[{"key":"building","status":"failed"}]}]}`)
+	}, "publish")
+	if err == nil {
+		t.Fatal("expected a non-nil error on a failed publish")
+	}
+	if !strings.Contains(out, "build failed (exit 1)") || !strings.Contains(out, "Cannot use") {
+		t.Fatalf("expected build error in output, got:\n%s", out)
+	}
+}
+
+// TestPublishNoWait proves --no-wait short-circuits before the follow loop: it
+// prints the "publishing" message and exits 0 without polling the run.
+func TestPublishNoWait(t *testing.T) {
+	_, out, err := runCmd(t, jsonResp(200, `{"ok":true,"publishing":true}`), "publish", "--no-wait")
+	if err != nil {
+		t.Fatalf("no-wait should not error: %v", err)
+	}
+	if !strings.Contains(out, "publishing") {
+		t.Fatalf("expected publishing message, got: %s", out)
 	}
 }
 
