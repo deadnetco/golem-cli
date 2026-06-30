@@ -696,7 +696,12 @@ func printSchedules(rows []client.ScheduleRow) {
 		if r.LastRunStatus != nil {
 			last = fmt.Sprintf("  last run: %s", *r.LastRunStatus)
 		}
-		fmt.Printf("%s  (%s)  %s  [%s]%s\n", r.Name, r.Cadence, r.Target, state, last)
+		// Show the per-schedule run timeout only when overridden (nil = the 15m default).
+		timeout := ""
+		if r.TimeoutMs != nil {
+			timeout = fmt.Sprintf("  timeout: %dm", *r.TimeoutMs/60000)
+		}
+		fmt.Printf("%s  (%s)  %s  [%s]%s%s\n", r.Name, r.Cadence, r.Target, state, timeout, last)
 	}
 }
 

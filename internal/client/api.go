@@ -90,6 +90,8 @@ type ScheduleRow struct {
 	Target        string  `json:"target"`
 	Mechanism     string  `json:"mechanism"`
 	Enabled       bool    `json:"enabled"`
+	// Per-schedule run timeout in ms; nil = the platform default (15m). golem.json `timeoutMinutes`.
+	TimeoutMs     *int    `json:"timeoutMs"`
 	LastRunStatus *string `json:"lastRunStatus"`
 	LastRunAt     *string `json:"lastRunAt"`
 }
