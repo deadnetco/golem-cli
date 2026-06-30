@@ -456,6 +456,26 @@ func TestSchedulesListCommand(t *testing.T) {
 	}
 }
 
+func TestSchedulesListCommand_Timeout(t *testing.T) {
+	// A per-schedule override (timeoutMs 2_400_000 = 40m) renders as "timeout: 40m"; a row with a
+	// nil override shows no timeout segment (= the 15m platform default).
+	_, out, err := runCmd(t,
+		jsonResp(200, `[
+			{"id":"1","appId":"a","name":"long","cadence":"weekly","target":"export.js","mechanism":"scheduler","enabled":true,"timeoutMs":2400000,"lastRunStatus":null,"lastRunAt":null},
+			{"id":"2","appId":"a","name":"quick","cadence":"daily","target":"job.js","mechanism":"scheduler","enabled":true,"timeoutMs":null,"lastRunStatus":null,"lastRunAt":null}
+		]`),
+		"schedules", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "timeout: 40m") {
+		t.Errorf("expected the override timeout in output = %q", out)
+	}
+	if strings.Count(out, "timeout:") != 1 {
+		t.Errorf("only the overridden row should show a timeout = %q", out)
+	}
+}
+
 func TestSchedulesSyncCommand(t *testing.T) {
 	rec, out, err := runCmd(t,
 		jsonResp(200, `{"ok":true,"declared":3,"added":1,"updated":1,"removed":0}`),

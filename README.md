@@ -56,7 +56,7 @@ key; ask an admin to reissue, or restart the Codespace
 | `golem secret set KEY[=VALUE]` | `PUT /api/v1/config` `{secret:true}` | value read from **stdin** when omitted (never required on argv) |
 | `golem secret rm KEY` / `golem config rm KEY` | `DELETE /api/v1/config?key=KEY` | stages a removal |
 | `golem logs [--stream console\|errors\|ci] [--follow]` | `GET /api/v1/logs?stream=…` | default `console`; **`--follow` polls the snapshot** (see below) |
-| `golem schedules list` | `GET /api/v1/schedules` | golem.json-declared schedules |
+| `golem schedules list` | `GET /api/v1/schedules` | golem.json-declared schedules (shows a per-schedule run timeout when set; default 15m) |
 | `golem schedules sync` | `POST /api/v1/schedules` | reconcile `golem.json` @ HEAD (build-free) |
 | `golem webhooks list` | `GET /api/v1/webhooks` | inbound webhook endpoints, each with its public URL |
 | `golem webhooks add LABEL PATH` | `POST /api/v1/webhooks` | create an endpoint; returns the `hooks.deadnet.co/<id>` URL |

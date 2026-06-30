@@ -274,13 +274,16 @@ func TestConfigRemove_QueryParam(t *testing.T) {
 
 func TestSchedulesList(t *testing.T) {
 	c, _ := newTestClient(t, jsonHandler(200,
-		`[{"id":"1","appId":"a","name":"nightly","cadence":"daily","target":"job.js","mechanism":"scheduler","enabled":true,"lastRunStatus":"succeeded","lastRunAt":null}]`))
+		`[{"id":"1","appId":"a","name":"nightly","cadence":"daily","target":"job.js","mechanism":"scheduler","enabled":true,"timeoutMs":2400000,"lastRunStatus":"succeeded","lastRunAt":null}]`))
 	rows, err := c.SchedulesList(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0].Name != "nightly" || !rows[0].Enabled {
 		t.Errorf("rows = %+v", rows)
+	}
+	if rows[0].TimeoutMs == nil || *rows[0].TimeoutMs != 2400000 {
+		t.Errorf("TimeoutMs = %v, want 2400000", rows[0].TimeoutMs)
 	}
 }
 
