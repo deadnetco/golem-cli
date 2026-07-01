@@ -63,7 +63,9 @@ func TestUpdateNotice(t *testing.T) {
 	if msg := updateNotice("v0.1.2", versionCache{Latest: "v0.1.3"}); msg == "" {
 		t.Error("expected a notice when current<latest")
 	}
-	// silent when up to date, when no latest known, or on a dev build
+	// silent when up to date, when no latest known, on a dev build — and, crucially, when the
+	// running binary is AHEAD of the cached latest (a local/ahead build or post-release cache lag):
+	// it must NOT print a backwards "older is available" nudge.
 	for _, c := range []struct {
 		cur   string
 		cache versionCache
@@ -72,10 +74,53 @@ func TestUpdateNotice(t *testing.T) {
 		{"v0.1.3", versionCache{Latest: ""}},
 		{"dev", versionCache{Latest: "v0.1.3"}},
 		{"", versionCache{Latest: "v0.1.3"}},
+		{"v0.1.7", versionCache{Latest: "v0.1.6"}}, // ahead of cached latest — the bug: no notice
+		{"v0.2.0", versionCache{Latest: "v0.1.9"}}, // minor ahead
+		{"v1.0.0", versionCache{Latest: "v0.9.9"}}, // major ahead
 	} {
 		if msg := updateNotice(c.cur, c.cache); msg != "" {
 			t.Errorf("expected no notice for cur=%q cache=%+v, got %q", c.cur, c.cache, msg)
 		}
+	}
+	// still nags across minor/major bumps and ignores a v-prefix / pre-release suffix
+	for _, c := range []struct {
+		cur   string
+		cache versionCache
+	}{
+		{"v0.1.9", versionCache{Latest: "v0.2.0"}},
+		{"v0.9.9", versionCache{Latest: "v1.0.0"}},
+		{"0.1.2", versionCache{Latest: "0.1.3"}},
+	} {
+		if msg := updateNotice(c.cur, c.cache); msg == "" {
+			t.Errorf("expected a notice for cur=%q cache=%+v", c.cur, c.cache)
+		}
+	}
+}
+
+func TestVersionLess(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"v0.1.6", "v0.1.7", true},
+		{"v0.1.7", "v0.1.6", false},
+		{"v0.1.7", "v0.1.7", false},
+		{"v0.2.0", "v0.10.0", true}, // numeric compare, not lexical
+		{"v1.0.0", "v0.9.9", false},
+		{"0.1.2", "v0.1.3", true}, // mixed prefix
+		{"v0.1.3-rc1", "v0.1.3", false},
+	}
+	for _, c := range cases {
+		if got := versionLess(c.a, c.b); got != c.want {
+			t.Errorf("versionLess(%q,%q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+	// unparseable pair falls back to string inequality
+	if !versionLess("weird", "other") {
+		t.Error("versionLess fallback: distinct unparseable strings should be 'less' (a != b)")
+	}
+	if versionLess("weird", "weird") {
+		t.Error("versionLess fallback: identical unparseable strings should not be 'less'")
 	}
 }
 

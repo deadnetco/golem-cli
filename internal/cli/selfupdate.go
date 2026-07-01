@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -238,7 +239,53 @@ func updateNotice(current string, c versionCache) string {
 	if current == "" || current == "dev" || c.Latest == "" || c.Latest == current {
 		return ""
 	}
+	// Only nag when the known latest is strictly NEWER than the running version. A plain `!=` would
+	// nag whenever the binary is AHEAD of the cached latest — a local build, or the window right
+	// after a release before the ~daily cache refresh catches up — printing a backwards "vX is
+	// available (you have vX+1)". Compare versions so an ahead build stays quiet.
+	if !versionLess(current, c.Latest) {
+		return ""
+	}
 	return fmt.Sprintf("golem %s is available (you have %s) — run `golem upgrade` to update.", c.Latest, current)
+}
+
+// versionLess reports whether release tag a is strictly older than b. Both are the release shape
+// `vMAJOR.MINOR.PATCH` (leading `v` optional; any `-pre`/`+build` suffix is ignored). If EITHER can't
+// be parsed, it falls back to `a != b` (the prior behavior) so an unexpected tag format still
+// surfaces a difference rather than silently hiding a real update.
+func versionLess(a, b string) bool {
+	pa, oka := parseVersion(a)
+	pb, okb := parseVersion(b)
+	if !oka || !okb {
+		return a != b
+	}
+	for i := range pa {
+		if pa[i] != pb[i] {
+			return pa[i] < pb[i]
+		}
+	}
+	return false
+}
+
+// parseVersion parses `v1.2.3` (or `1.2.3`, with an optional `-suffix`/`+build`) into {major,minor,patch}.
+func parseVersion(s string) ([3]int, bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	if i := strings.IndexAny(s, "-+"); i >= 0 {
+		s = s[:i] // drop pre-release / build metadata
+	}
+	parts := strings.SplitN(s, ".", 3)
+	if len(parts) != 3 {
+		return [3]int{}, false
+	}
+	var out [3]int
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return [3]int{}, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 // maybePrintUpdateNotice prints the nudge to stderr when a newer release is known. It is best-effort
