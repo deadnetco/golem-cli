@@ -79,6 +79,23 @@ func jsonResp(status int, body string) func(http.ResponseWriter, *http.Request) 
 	}
 }
 
+// devPullResp routes the two requests `golem dev pull` makes: GET /api/v1/env and
+// GET /api/v1/integrations. Any other path is a test failure.
+func devPullResp(t *testing.T, envBody, integrationsBody string) func(http.ResponseWriter, *http.Request) {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/env":
+			_, _ = io.WriteString(w, envBody)
+		case "/api/v1/integrations":
+			_, _ = io.WriteString(w, integrationsBody)
+		default:
+			t.Errorf("dev pull hit unexpected path %s", r.URL.Path)
+		}
+	}
+}
+
 func TestRun_NoArgs(t *testing.T) {
 	if err := Run(nil, "v1"); err == nil {
 		t.Fatal("expected an error for no subcommand")
@@ -608,14 +625,14 @@ func TestDevPullCommand(t *testing.T) {
 	t.Chdir(t.TempDir())
 
 	rec, _, err := runCmd(t,
-		jsonResp(200, `{"env":[{"key":"FOO","value":"bar"},{"key":"SLACK_WEBHOOK_URL","value":"dev-hook"}]}`),
+		devPullResp(t,
+			`{"env":[{"key":"FOO","value":"bar"},{"key":"SLACK_WEBHOOK_URL","value":"dev-hook"}]}`,
+			`{"credentials":{},"proxy":null}`),
 		"dev", "pull")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.method != "GET" || rec.path != "/api/v1/env" {
-		t.Errorf("got %s %s, want GET /api/v1/env", rec.method, rec.path)
-	}
+	// Two requests are made (env + integrations); rec captures the last. Auth binds both.
 	if rec.auth != "Bearer test-key" {
 		t.Errorf("auth = %q, want Bearer test-key", rec.auth)
 	}
@@ -630,6 +647,13 @@ func TestDevPullCommand(t *testing.T) {
 	if !strings.Contains(got, "SLACK_WEBHOOK_URL='dev-hook'\n") {
 		t.Errorf(".env.golem = %q, missing SLACK_WEBHOOK_URL='dev-hook'", got)
 	}
+	// No connections → no CA file written and no proxy lines.
+	if _, statErr := os.Stat(".golem-proxy-ca.pem"); !os.IsNotExist(statErr) {
+		t.Error("CA file should not be written when proxy is null")
+	}
+	if strings.Contains(got, "HTTPS_PROXY=") {
+		t.Errorf(".env.golem = %q, unexpected proxy line with null proxy", got)
+	}
 	// 0600: dev secrets on disk must not be world-readable.
 	info, err := os.Stat(".env.golem")
 	if err != nil {
@@ -637,6 +661,59 @@ func TestDevPullCommand(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf(".env.golem perm = %o, want 600", perm)
+	}
+}
+
+// TestDevPull_ConnectionEnvsAndProxy is the regression guard for the bug this fixes: `golem dev
+// pull` must fold the CONNECTION (native-integration) dev creds from /api/v1/integrations into
+// .env.golem, and wire the egress proxy + CA so the glm_ placeholders resolve in dev.
+func TestDevPull_ConnectionEnvsAndProxy(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	const caPEM = "-----BEGIN CERTIFICATE-----\nMIIFAKEpem\n-----END CERTIFICATE-----\n"
+	integBody, err := json.Marshal(map[string]any{
+		"credentials": map[string]string{"SLACK_BOT_TOKEN": "glm_abc", "SLACK_TEAM_ID": "glm_def"},
+		"proxy": map[string]string{
+			"httpsProxyUrl": "https://myapp:sekret@egress.golem.dev",
+			"caCertPem":     caPEM,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = runCmd(t,
+		devPullResp(t, `{"env":[{"key":"FOO","value":"bar"}]}`, string(integBody)),
+		"dev", "pull")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(".env.golem")
+	if err != nil {
+		t.Fatalf("read .env.golem: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		"FOO='bar'\n",                 // plain env still there
+		"SLACK_BOT_TOKEN='glm_abc'\n", // connection cred
+		"SLACK_TEAM_ID='glm_def'\n",   // connection cred
+		"HTTPS_PROXY='https://myapp:sekret@egress.golem.dev'\n", // egress proxy (uppercase)
+		"https_proxy='https://myapp:sekret@egress.golem.dev'\n", // + lowercase for broad coverage
+		"NODE_EXTRA_CA_CERTS='",                                 // Node CA (append-safe), abs path
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf(".env.golem missing %q\n--- file ---\n%s", want, got)
+		}
+	}
+
+	// The CA cert is written verbatim to the file NODE_EXTRA_CA_CERTS points at.
+	ca, err := os.ReadFile(".golem-proxy-ca.pem")
+	if err != nil {
+		t.Fatalf("read CA file: %v", err)
+	}
+	if string(ca) != caPEM {
+		t.Errorf("CA file = %q, want %q", string(ca), caPEM)
 	}
 }
 
@@ -660,7 +737,7 @@ func TestDevPull_MissingKeyFailsFast(t *testing.T) {
 // apostrophe, a `$`, and a newline, then asserts the written .env.golem
 // round-trips: sourcing it under `set -a; . .env.golem; set +a` yields exactly
 // the original value (single-quoted, with embedded single-quotes escaped as
-// '\''). This proves the file can't corrupt or shell-inject when sourced.
+// '\”). This proves the file can't corrupt or shell-inject when sourced.
 func TestDevPull_EscapingRoundTrip(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no POSIX sh available to verify the round-trip")

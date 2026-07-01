@@ -83,13 +83,13 @@ type StageResult struct {
 
 // ScheduleRow is one element of GET /api/v1/schedules (the app_schedules row).
 type ScheduleRow struct {
-	ID            string  `json:"id"`
-	AppID         string  `json:"appId"`
-	Name          string  `json:"name"`
-	Cadence       string  `json:"cadence"`
-	Target        string  `json:"target"`
-	Mechanism     string  `json:"mechanism"`
-	Enabled       bool    `json:"enabled"`
+	ID        string `json:"id"`
+	AppID     string `json:"appId"`
+	Name      string `json:"name"`
+	Cadence   string `json:"cadence"`
+	Target    string `json:"target"`
+	Mechanism string `json:"mechanism"`
+	Enabled   bool   `json:"enabled"`
 	// Per-schedule run timeout in ms; nil = the platform default (15m). golem.json `timeoutMinutes`.
 	TimeoutMs     *int    `json:"timeoutMs"`
 	LastRunStatus *string `json:"lastRunStatus"`
@@ -140,6 +140,23 @@ type EnvEntry struct {
 // EnvResult is GET /api/v1/env ({ env: [{key,value}] }).
 type EnvResult struct {
 	Env []EnvEntry `json:"env"`
+}
+
+// IntegrationsResult is GET /api/v1/integrations — the app's CONNECTION (native integration)
+// dev values: a flat map of {ENV_PREFIX}_{KEY} -> synthetic glm_ placeholder for every enabled
+// connection, plus the egress-proxy URL + CA cert. `golem dev pull` writes the credentials into
+// .env.golem and wires the proxy/CA so those placeholders resolve through golem's integration
+// proxy in dev exactly as they do in prod. Never real provider keys.
+type IntegrationsResult struct {
+	Credentials map[string]string  `json:"credentials"`
+	Proxy       *IntegrationsProxy `json:"proxy"`
+}
+
+// IntegrationsProxy is the egress-proxy cred + CA cert (null unless the platform configured
+// PUBLIC_EGRESS_PROXY_URL + INTEGRATION_PROXY_CA_CERT). HTTPSProxyURL embeds a per-app dev cred.
+type IntegrationsProxy struct {
+	HTTPSProxyURL string `json:"httpsProxyUrl"`
+	CACertPEM     string `json:"caCertPem"`
 }
 
 // LogStreamResult is GET /api/v1/logs — the ok/empty/disabled/error discriminated
@@ -202,6 +219,12 @@ func (c *Client) ConfigRemove(ctx context.Context, key string) (*StageResult, er
 func (c *Client) Env(ctx context.Context) (*EnvResult, error) {
 	var r EnvResult
 	return &r, c.Do(ctx, "GET", "env", nil, &r)
+}
+
+// Integrations fetches the app's connection dev creds + egress proxy (GET /api/v1/integrations).
+func (c *Client) Integrations(ctx context.Context) (*IntegrationsResult, error) {
+	var r IntegrationsResult
+	return &r, c.Do(ctx, "GET", "integrations", nil, &r)
 }
 
 func (c *Client) SchedulesList(ctx context.Context) ([]ScheduleRow, error) {

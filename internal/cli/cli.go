@@ -14,7 +14,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -421,8 +423,10 @@ func cmdDev(args []string) error {
 // sourced by the template's start-app.sh.
 const devEnvFile = ".env.golem"
 
-// devPull fetches the app's effective dev values and atomically rewrites
-// .env.golem with single-quoted, shell-safe KEY='value' lines.
+// devPull fetches the app's effective dev values AND its connection (native-integration) dev
+// creds + egress proxy, and atomically rewrites .env.golem with single-quoted, shell-safe
+// KEY='value' lines. Connection creds are the same synthetic glm_ placeholders prod fans; the
+// proxy env + CA make them resolve through golem's integration proxy in dev, exactly as in prod.
 //
 // Error classes are deliberate:
 //   - A missing GOLEM_API_KEY is a fail-fast error (client.New returns
@@ -435,15 +439,81 @@ func devPull() error {
 	if err != nil {
 		return err // missing key → fail fast (ErrNoAPIKey)
 	}
-	res, err := c.Env(ctx())
+	env, err := c.Env(ctx())
 	if err != nil {
 		return devPullFailed(err)
 	}
-	if err := writeDevEnvFile(res.Env); err != nil {
+	// Connection (native-integration) dev creds + egress proxy — parity with prod so an app's
+	// glm_ placeholder tokens resolve through golem's integration proxy in dev. Folded into the
+	// SAME .env.golem the app already sources at boot. An app with no connections returns an
+	// empty map + null proxy, so this is a no-op for those apps.
+	integ, err := c.Integrations(ctx())
+	if err != nil {
 		return devPullFailed(err)
 	}
-	fmt.Printf("pulled %d dev value(s) into %s\n", len(res.Env), devEnvFile)
+
+	entries := append([]client.EnvEntry(nil), env.Env...)
+	entries = append(entries, sortedEnvEntries(integ.Credentials)...)
+	if integ.Proxy != nil && integ.Proxy.HTTPSProxyURL != "" {
+		proxyEntries, caErr := proxyDevEntries(integ.Proxy)
+		if caErr != nil {
+			return devPullFailed(caErr)
+		}
+		entries = append(entries, proxyEntries...)
+	}
+
+	if err := writeDevEnvFile(entries); err != nil {
+		return devPullFailed(err)
+	}
+	fmt.Printf("pulled %d dev value(s) into %s\n", len(entries), devEnvFile)
 	return nil
+}
+
+// sortedEnvEntries turns a KEY->value map into an EnvEntry slice sorted by key, so the connection
+// creds land in .env.golem deterministically across pulls (stable diffs, reproducible file).
+func sortedEnvEntries(m map[string]string) []client.EnvEntry {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]client.EnvEntry, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, client.EnvEntry{Key: k, Value: m[k]})
+	}
+	return out
+}
+
+// devProxyCAFile is the CA cert `golem dev pull` writes next to .env.golem so dev TLS to golem's
+// integration MITM proxy is trusted. The CA is PUBLIC (also served at /api/ca-cert), so 0644 /
+// leaving it un-gitignored leaks nothing.
+const devProxyCAFile = ".golem-proxy-ca.pem"
+
+// proxyDevEntries writes the proxy CA to devProxyCAFile and returns the env entries that route dev
+// tooling through the egress proxy. It sets HTTP(S)_PROXY (upper + lower case for broad tool
+// coverage) and NODE_EXTRA_CA_CERTS — Node APPENDS the latter to its trust store, so normal TLS
+// to non-proxied hosts still works. SSL_CERT_FILE / REQUESTS_CA_BUNDLE are deliberately NOT set:
+// they REPLACE the default bundle and would break other HTTPS in a dev shell (Node starters are
+// the target; a Python dev would need a concatenated bundle — a documented follow-up).
+func proxyDevEntries(p *client.IntegrationsProxy) ([]client.EnvEntry, error) {
+	entries := []client.EnvEntry{
+		{Key: "HTTPS_PROXY", Value: p.HTTPSProxyURL},
+		{Key: "https_proxy", Value: p.HTTPSProxyURL},
+		{Key: "HTTP_PROXY", Value: p.HTTPSProxyURL},
+		{Key: "http_proxy", Value: p.HTTPSProxyURL},
+	}
+	if p.CACertPEM == "" {
+		return entries, nil
+	}
+	if err := os.WriteFile(devProxyCAFile, []byte(p.CACertPEM), 0o644); err != nil {
+		return nil, fmt.Errorf("write %s: %w", devProxyCAFile, err)
+	}
+	abs, err := filepath.Abs(devProxyCAFile)
+	if err != nil {
+		abs = devProxyCAFile
+	}
+	entries = append(entries, client.EnvEntry{Key: "NODE_EXTRA_CA_CERTS", Value: abs})
+	return entries, nil
 }
 
 // devPullFailed prints the cached-fallback banner and returns the underlying
@@ -458,7 +528,7 @@ func devPullFailed(err error) error {
 // lines and atomically replaces .env.golem (0600). A value is arbitrary text up
 // to 32KB, so a raw newline/$/quote/backtick would corrupt the file or
 // shell-inject when sourced — single-quoting and escaping any embedded single
-// quote as '\'' makes the file safe under `set -a; . .env.golem; set +a`. The
+// quote as '\” makes the file safe under `set -a; . .env.golem; set +a`. The
 // file is written via a tmp + os.Rename so a partial write never clobbers a
 // good cached file.
 func writeDevEnvFile(entries []client.EnvEntry) error {
