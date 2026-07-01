@@ -63,6 +63,7 @@ key; ask an admin to reissue, or restart the Codespace
 | `golem webhooks rm ID` | `DELETE /api/v1/webhooks?id=ID` | remove an endpoint (scoped to this app) |
 | `golem restart` | `POST /api/v1/restart` | best-effort roll of the app's machine |
 | `golem open` | `GET /api/v1/whoami` (for the slug) | prints + `open`/`xdg-open`s `https://<slug>.tools.deadnet.co` |
+| `golem skill install [--global]` | (none — embedded) | install golem's Claude Code skill into `.claude/skills/golem/` (project) or `~/.claude` (`--global`); see below |
 | `golem upgrade` | (none — GitHub releases) | replace the running binary with the latest release (sudo-escalates if its dir is root-owned) |
 | `golem version` | (none) | prints the stamped version |
 | `golem help` | (none) | usage |
@@ -80,6 +81,22 @@ The check uses the `releases/latest` redirect (no GitHub API → no rate limit),
 (stderr only, skipped when stdout isn't a TTY), and is disabled by `GOLEM_NO_UPDATE_CHECK`. In the
 starter dev containers the CLI also auto-refreshes to latest on container start, so the notice is
 mainly a heads-up for a new release mid-session.
+
+### The golem skill (`golem skill install`)
+
+`golem skill install` writes an agent-facing golem reference to `.claude/skills/golem/SKILL.md`
+(the current project) or `~/.claude/skills/golem/SKILL.md` (with `--global`) so **Claude Code loads
+it on demand** when you operate the app (deploy, config/secrets, schedules, webhooks, dev env, logs).
+
+The skill is **embedded in this binary**, so it's **updateable via the CLI's own self-update**: fix
+the source, cut a release, and every dev container picks up the new skill on its next `golem` update
+— no per-repo staleness. Install is idempotent (writes only when the content differs), and any
+**already-installed** skill self-heals to the current content on the next `golem` command (an absent
+one is never created unprompted). To keep it current, the dev container runs `golem skill install`
+on create.
+
+Distinct from the app's `CLAUDE.md`, which stays the always-loaded behavioral orientation; the skill
+is the on-demand reference.
 
 ### A note on `logs --follow`
 

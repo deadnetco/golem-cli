@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/deadnetco/golem-cli/internal/client"
+	"github.com/deadnetco/golem-cli/internal/skill"
 )
 
 // followInterval is how often --follow re-fetches a log snapshot.
@@ -37,6 +38,9 @@ func Run(args []string, version string) error {
 	err := dispatch(cmd, rest, version)
 	// On a clean run, best-effort nudge if a newer release is out (stderr, TTY-only, cached ~1/day).
 	if err == nil {
+		// Self-heal an ALREADY-installed golem skill to this binary's embedded content, so it stays
+		// current after a `golem upgrade` without nagging or creating files unprompted.
+		skill.RefreshIfPresent()
 		maybePrintUpdateNotice(version, cmd)
 	}
 	return err
@@ -74,6 +78,8 @@ func dispatch(cmd string, rest []string, version string) error {
 		return cmdWebhooks(rest)
 	case "upgrade":
 		return cmdUpgrade(rest, version)
+	case "skill":
+		return cmdSkill(rest)
 	case "open":
 		return cmdOpen(rest)
 	default:
@@ -474,6 +480,33 @@ func writeDevEnvFile(entries []client.EnvEntry) error {
 	return nil
 }
 
+// cmdSkill installs golem's Claude Code skill (agent-facing CLI reference). It writes
+// .claude/skills/golem/SKILL.md into the current project, or ~/.claude with --global.
+// The content is embedded in this binary, so re-running after `golem upgrade` refreshes it.
+func cmdSkill(args []string) error {
+	if len(args) == 0 || args[0] != "install" {
+		return errors.New("usage: golem skill install [--global]")
+	}
+	fs := flag.NewFlagSet("skill install", flag.ContinueOnError)
+	global := fs.Bool("global", false, "install into ~/.claude (all projects) instead of the current project")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("skill install takes no positional arguments (got %q)", strings.Join(fs.Args(), " "))
+	}
+	p, action, err := skill.Install(*global)
+	if err != nil {
+		return err
+	}
+	if action == skill.Unchanged {
+		fmt.Printf("golem skill already up to date: %s\n", p)
+	} else {
+		fmt.Printf("golem skill %s: %s\n", action, p)
+	}
+	return nil
+}
+
 func cmdLogs(args []string) error {
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
 	stream := fs.String("stream", "console", "log stream: console|errors|ci")
@@ -792,6 +825,7 @@ Usage:
   golem webhooks add LABEL PATH     create an endpoint; prints the public URL to give a provider
   golem webhooks rm ID              remove an endpoint
   golem open                        print + open https://<slug>.tools.deadnet.co
+  golem skill install [--global]    install golem's Claude Code skill into .claude/skills (--global = ~/.claude)
   golem upgrade                     update golem to the latest release
   golem version                     print the CLI version
   golem help                        this help
