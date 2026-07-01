@@ -92,8 +92,8 @@ The skill is **embedded in this binary**, so it's **updateable via the CLI's own
 the source, cut a release, and every dev container picks up the new skill on its next `golem` update
 — no per-repo staleness. Install is idempotent (writes only when the content differs), and any
 **already-installed** skill self-heals to the current content on the next `golem` command (an absent
-one is never created unprompted). To keep it current, the dev container runs `golem skill install`
-on create.
+one is never created unprompted). Recommended: add `golem skill install` to the dev container's
+create step so every app has it from the first boot (then the self-heal keeps it current).
 
 Distinct from the app's `CLAUDE.md`, which stays the always-loaded behavioral orientation; the skill
 is the on-demand reference.
