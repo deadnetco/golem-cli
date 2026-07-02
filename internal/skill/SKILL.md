@@ -64,7 +64,7 @@ Full recipes/schemas live in `docs/builders/` (rendered at **/docs** in the gole
 
 - **Deploying, publish flags, `status`, `restart`** → `docs/builders/deploying.md`
 - **`config` / `env` / `secret` (staging, stdin secrets), platform-managed vars** → `docs/builders/config-and-secrets.md`
-- **`golem.json` schema, `schedules list`/`sync`, cadence/target/`timeoutMinutes`/`memoryMb`** → `docs/builders/schedules.md`
+- **`golem.json` schema, `schedules list`/`sync`, cadence/target/`timeoutMinutes`/`memoryMb`/`size`** → `docs/builders/schedules.md`
 - **`webhooks add`/`list`/`rm`, signing (`X-Golem-*`, `GOLEM_WEBHOOK_SECRET`), body cap, reply window** → `docs/builders/webhooks.md`
 - **`dev pull` / `.env.golem`, dev parity** → `docs/builders/developing.md`
 - **Egress grants, proxies** → `docs/builders/egress-and-networking.md`
