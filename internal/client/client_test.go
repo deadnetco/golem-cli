@@ -305,7 +305,7 @@ func TestSchedulesSync(t *testing.T) {
 func TestLogs_StreamQueryAndOK(t *testing.T) {
 	c, cap := newTestClient(t, jsonHandler(200,
 		`{"status":"ok","rows":["line one","line two"]}`))
-	r, err := c.Logs(context.Background(), "console")
+	r, err := c.Logs(context.Background(), "console", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestLogs_StreamQueryAndOK(t *testing.T) {
 func TestLogs_Disabled(t *testing.T) {
 	c, _ := newTestClient(t, jsonHandler(200,
 		`{"status":"disabled","hint":"enable Sentry event:read"}`))
-	r, err := c.Logs(context.Background(), "errors")
+	r, err := c.Logs(context.Background(), "errors", "")
 	if err != nil {
 		t.Fatal(err)
 	}
