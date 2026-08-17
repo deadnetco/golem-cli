@@ -55,8 +55,9 @@ key; ask an admin to reissue, or restart the Codespace
 | `golem env set KEY=VALUE` | alias of `config set` | |
 | `golem secret set KEY[=VALUE]` | `PUT /api/v1/config` `{secret:true}` | value read from **stdin** when omitted (never required on argv) |
 | `golem secret rm KEY` / `golem config rm KEY` | `DELETE /api/v1/config?key=KEY` | stages a removal |
-| `golem logs [--stream console\|errors\|ci] [--follow]` | `GET /api/v1/logs?stream=…` | default `console`; **`--follow` polls the snapshot** (see below) |
+| `golem logs [--stream console\|errors\|ci] [--instance ID] [--follow]` | `GET /api/v1/logs?stream=…&instance=…` | default `console`; `--instance` narrows console to one machine id; **`--follow` polls the snapshot** (see below) |
 | `golem schedules list` | `GET /api/v1/schedules` | golem.json-declared schedules (shows a per-schedule run timeout when set; default 15m) |
+| `golem schedules runs [NAME] [--limit N] [--output]` | `GET /api/v1/schedules/runs?name=…&limit=…` | run history newest-first: outcome, exit, when, duration, the image each run executed, machine id; `--output` adds each run's captured output tail + full image ref |
 | `golem schedules sync` | `POST /api/v1/schedules` | reconcile `golem.json` @ HEAD (build-free) |
 | `golem webhooks list` | `GET /api/v1/webhooks` | inbound webhook endpoints, each with its public URL |
 | `golem webhooks add LABEL PATH` | `POST /api/v1/webhooks` | create an endpoint; returns the `hooks.deadnet.co/<id>` URL |
@@ -102,7 +103,11 @@ is the on-demand reference.
 
 The log endpoints are **snapshot** fetchers, not live streams. `--follow`
 re-fetches the snapshot every few seconds and re-renders it; it is not a tail.
-Press Ctrl-C to stop.
+Press Ctrl-C to stop. The console snapshot is Fly's window of the newest ~100
+app-wide lines (there is no `--since`; a busy app machine pushes a schedule
+run's lines out within minutes) — `--instance <machine id>` narrows it to one
+machine, and `golem schedules runs --output` shows each schedule run's own
+captured tail, which golem keeps per run regardless of that window.
 
 ### Error handling
 

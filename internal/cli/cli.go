@@ -202,7 +202,13 @@ func followPublish(c *client.Client) error {
 					} else if p.Status == "skipped" {
 						mark = "–"
 					}
-					fmt.Printf("  %s %s\n", p.Key, mark)
+					// The server records what each phase DID (built <sha>, up to date, no changes,
+					// rolled N machines…) — print it so a bare "–" never reads as "nothing happened".
+					if p.Detail != "" {
+						fmt.Printf("  %s %s  %s\n", p.Key, mark, p.Detail)
+					} else {
+						fmt.Printf("  %s %s\n", p.Key, mark)
+					}
 				}
 			}
 			switch run.Status {
@@ -580,6 +586,7 @@ func cmdSkill(args []string) error {
 func cmdLogs(args []string) error {
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
 	stream := fs.String("stream", "console", "log stream: console|errors|ci")
+	instance := fs.String("instance", "", "console only: narrow the snapshot to one Fly machine id (e.g. a schedule run's machine — see `golem schedules runs`)")
 	follow := fs.Bool("follow", false, "poll the snapshot every few seconds (these are snapshot fetchers, not live streams)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -589,12 +596,15 @@ func cmdLogs(args []string) error {
 	default:
 		return fmt.Errorf("unknown stream %q (want console|errors|ci)", *stream)
 	}
+	if *instance != "" && *stream != "console" {
+		return errors.New("--instance applies to the console stream only")
+	}
 	c, err := client.New()
 	if err != nil {
 		return err
 	}
 	if !*follow {
-		res, err := c.Logs(ctx(), *stream)
+		res, err := c.Logs(ctx(), *stream, *instance)
 		if err != nil {
 			return err
 		}
@@ -604,7 +614,7 @@ func cmdLogs(args []string) error {
 	// --follow: these are snapshot endpoints, not real streams — we re-fetch on
 	// an interval and re-render the whole snapshot each time.
 	for {
-		res, err := c.Logs(ctx(), *stream)
+		res, err := c.Logs(ctx(), *stream, *instance)
 		if err != nil {
 			return err
 		}
@@ -616,10 +626,49 @@ func cmdLogs(args []string) error {
 
 func cmdSchedules(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: golem schedules <list|sync>")
+		return errors.New("usage: golem schedules <list|runs|sync>")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
+	case "runs":
+		// `golem schedules runs [NAME] [--limit N] [--output]`: the run history — per run the schedule,
+		// outcome, when, how long, the IMAGE it executed, and (--output) its captured output tail.
+		fs := flag.NewFlagSet("schedules runs", flag.ContinueOnError)
+		limit := fs.Int("limit", 20, "how many runs (newest first, max 100)")
+		output := fs.Bool("output", false, "also print each run's captured output tail and full image ref")
+		// Accept `golem schedules runs NAME --limit 5` AND `--limit 5 NAME`: pull the one bare word
+		// (the schedule name) out, hand everything else to the flag set.
+		name := ""
+		var flagArgs []string
+		for i := 0; i < len(rest); i++ {
+			a := rest[i]
+			if strings.HasPrefix(a, "-") {
+				flagArgs = append(flagArgs, a)
+				// a value-taking flag given as two words consumes the next arg
+				if (strings.TrimLeft(a, "-") == "limit") && i+1 < len(rest) {
+					i++
+					flagArgs = append(flagArgs, rest[i])
+				}
+				continue
+			}
+			if name != "" {
+				return errors.New("usage: golem schedules runs [NAME] [--limit N] [--output]")
+			}
+			name = a
+		}
+		if err := fs.Parse(flagArgs); err != nil {
+			return err
+		}
+		c, err := client.New()
+		if err != nil {
+			return err
+		}
+		runs, err := c.SchedulesRuns(ctx(), name, *limit)
+		if err != nil {
+			return err
+		}
+		printScheduleRuns(runs, *output)
+		return nil
 	case "list":
 		if err := noFlags("schedules list", rest); err != nil {
 			return err
@@ -650,7 +699,7 @@ func cmdSchedules(args []string) error {
 			r.Declared, r.Added, r.Updated, r.Removed)
 		return nil
 	default:
-		return fmt.Errorf("unknown schedules subcommand %q (want list|sync)", sub)
+		return fmt.Errorf("unknown schedules subcommand %q (want list|runs|sync)", sub)
 	}
 }
 
@@ -808,6 +857,107 @@ func printSchedules(rows []client.ScheduleRow) {
 	}
 }
 
+// printScheduleRuns renders the run history, newest first. Each run: schedule, status, exit code,
+// start (UTC), duration, and the short image digest — the "which code did this run execute?" answer.
+// A failed run shows its first error line; --output prints the captured tail (+ the full image ref).
+func printScheduleRuns(runs []client.ScheduleRun, withOutput bool) {
+	if len(runs) == 0 {
+		fmt.Println("(no runs recorded — a schedule that has never fired, or history pruned)")
+		return
+	}
+	for _, r := range runs {
+		exit := "exit ?"
+		if r.ExitCode != nil {
+			exit = fmt.Sprintf("exit %d", *r.ExitCode)
+		} else if r.Status == "running" {
+			exit = "running"
+		}
+		dur := ""
+		if r.DurationMs != nil {
+			dur = "  " + formatDurationMs(*r.DurationMs)
+		}
+		img := "image ?"
+		if r.Image != nil {
+			img = shortImageRef(*r.Image)
+		}
+		fmt.Printf("%s  %s  %s  %s%s  %s  %s\n", formatUTC(r.StartedAt), r.Schedule, r.Status, exit, dur, img, deref(r.MachineID))
+		if r.Error != nil && *r.Error != "" && !withOutput {
+			parts := strings.SplitN(*r.Error, "\n", 2)
+			if len(parts) > 1 {
+				fmt.Printf("    %s  (+%d more lines — `golem schedules runs %s --output`)\n", parts[0], strings.Count(parts[1], "\n")+1, r.Schedule)
+			} else {
+				fmt.Printf("    %s\n", parts[0])
+			}
+		}
+		if withOutput {
+			if r.Image != nil {
+				fmt.Printf("    image: %s\n", *r.Image)
+			}
+			if r.Error != nil && *r.Error != "" {
+				fmt.Printf("    error: %s\n", strings.ReplaceAll(*r.Error, "\n", "\n           "))
+			}
+			if r.LogTail != nil && *r.LogTail != "" {
+				fmt.Println("    output:")
+				for _, line := range strings.Split(*r.LogTail, "\n") {
+					fmt.Printf("      %s\n", line)
+				}
+			} else {
+				fmt.Println("    output: (none captured)")
+			}
+		}
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// shortImageRef: "@86f8cbb4" for a digest ref, ":latest" for a tag ref.
+func shortImageRef(ref string) string {
+	if i := strings.LastIndex(ref, "@sha256:"); i != -1 {
+		d := ref[i+len("@sha256:"):]
+		if len(d) > 8 {
+			d = d[:8]
+		}
+		return "@" + d
+	}
+	if i := strings.LastIndex(ref, ":"); i != -1 && !strings.Contains(ref[i:], "/") {
+		return ref[i:]
+	}
+	return ref
+}
+
+// formatUTC renders an ISO instant as "2026-08-17 16:00:20 UTC" (falls back to the raw string).
+func formatUTC(iso string) string {
+	t, err := time.Parse(time.RFC3339Nano, iso)
+	if err != nil {
+		return iso
+	}
+	return t.UTC().Format("2006-01-02 15:04:05") + " UTC"
+}
+
+// formatDurationMs: "850ms", "42s", "2m 47s", "1h 30m".
+func formatDurationMs(ms int) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	secs := (ms + 500) / 1000 // round, matching the dashboard
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	m := secs / 60
+	if m < 60 {
+		if secs%60 == 0 {
+			return fmt.Sprintf("%dm", m)
+		}
+		return fmt.Sprintf("%dm %ds", m, secs%60)
+	}
+	return fmt.Sprintf("%dh %dm", m/60, m%60)
+}
+
 func printWebhooks(rows []client.WebhookRow) {
 	if len(rows) == 0 {
 		fmt.Println("(no webhook endpoints — `golem webhooks add LABEL /path` to create one)")
@@ -888,8 +1038,13 @@ Usage:
   golem secret set KEY[=VALUE]      stage a secret (value read from stdin if omitted)
   golem secret rm KEY               stage a secret removal
   golem dev pull                    hydrate .env.golem with this app's dev values
-  golem logs [--stream S] [--follow]  snapshot logs; S = console|errors|ci (default console)
+  golem logs [--stream S] [--instance ID] [--follow]
+                                    snapshot of the newest ~100 lines; S = console|errors|ci (default console);
+                                    --instance narrows console to one machine (a schedule run's machine id)
   golem schedules list              list golem.json-declared schedules
+  golem schedules runs [NAME] [--limit N] [--output]
+                                    run history: outcome, when, duration, the image each run executed;
+                                    --output adds each run's captured output tail
   golem schedules sync              reconcile golem.json @ HEAD
   golem webhooks list               list inbound webhook endpoints (with their URLs)
   golem webhooks add LABEL PATH     create an endpoint; prints the public URL to give a provider

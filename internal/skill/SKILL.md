@@ -25,10 +25,10 @@ This app runs on the **golem** platform. You operate it with the **golem CLI** (
 ## Ship a code change
 
 1. Edit + `git add -A && git commit -m "…" && git push` (SAVES only, does not deploy).
-2. `golem publish` (add `--force` to rebuild with no new commit). It **follows the run to completion** and exits **non-zero** on failed/blocked/interrupted, printing the error + build-log tail. `--no-wait` returns immediately; Ctrl-C stops following but does NOT cancel the server-side publish.
+2. `golem publish` (add `--force` to rebuild with no new commit). It **follows the run to completion**, printing each phase with what it did (`building ✓  built 3d10d05`, `reconciling –  no changes` — `–` = nothing to change, not "skipped by mistake"; the reconcile line covers secrets AND `golem.json` schedules), and exits **non-zero** on failed/blocked/interrupted, printing the error + build-log tail. `--no-wait` returns immediately; Ctrl-C stops following but does NOT cancel the server-side publish.
 3. On failure, read the printed error/tail or watch Logs → Audit. Live at `https://<slug>.tools.deadnet.co`.
 
-Check state anytime with `golem status`; tail with `golem logs [--stream console|errors|ci] [--follow]`.
+Check state anytime with `golem status`; snapshot logs with `golem logs [--stream console|errors|ci] [--instance ID] [--follow]` (the newest ~100 app-wide lines — for a schedule run's own output use `golem schedules runs NAME --output`, which is kept per run).
 
 ## Commands
 
@@ -48,11 +48,12 @@ Every command operates on the one app this `GOLEM_API_KEY` authorizes; `golem he
 
 **Schedules & webhooks** (declared in `golem.json`)
 - `golem schedules list | sync` — reconcile `golem.json` schedules @ HEAD
+- `golem schedules runs [NAME] [--limit N] [--output]` — run history: outcome, when, duration, the **image each run executed** (`@<digest>`), and with `--output` the run's captured output tail. Every run uses the app machine's CURRENT image at fire time — after a publish the next run is on the new image; never rename a schedule to "re-pin" it.
 - `golem webhooks list | add LABEL PATH | rm ID` — inbound endpoints (`add` prints the public URL to give a provider)
 
 **Dev & observability**
 - `golem dev pull` — hydrate `.env.golem` with this app's dev values
-- `golem logs [--stream console|errors|ci] [--follow]` — snapshot the app's logs
+- `golem logs [--stream console|errors|ci] [--instance ID] [--follow]` — snapshot of the newest ~100 app-wide log lines (Fly's window — not searchable further back); `--instance` narrows console to one machine id (a schedule run's `machineId` from `schedules runs`)
 
 **CLI**
 - `golem upgrade` — update the CLI to the latest release

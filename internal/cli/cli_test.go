@@ -223,6 +223,58 @@ func TestPublishFollow_FailedPrintsBuildError(t *testing.T) {
 	}
 }
 
+// TestPublishFollow_PrintsPhaseDetail: each phase line carries what the phase did (the server's
+// PublishPhaseRun.detail) — `reconciling – no changes` instead of a bare `–` that read as "skipped"
+// even when the schedules reconcile inside it had changed something (2026-08-17 feedback).
+func TestPublishFollow_PrintsPhaseDetail(t *testing.T) {
+	t.Setenv("GOLEM_PUBLISH_POLL_MS", "1")
+	_, out, err := runCmd(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `{"ok":true,"publishing":true}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"runs":[{"id":"r1","status":"succeeded","phases":[
+			{"key":"building","status":"done","detail":"built 3d10d05"},
+			{"key":"migrating","status":"done","detail":"up to date (0008_systemic_block_alert.sql)"},
+			{"key":"reconciling","status":"done","detail":"secrets unchanged · schedules +1/~0/−1"},
+			{"key":"restarting","status":"done","detail":"rolled 1 machine"}]}]}`)
+	}, "publish")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"  building ✓  built 3d10d05",
+		"  migrating ✓  up to date (0008_systemic_block_alert.sql)",
+		"  reconciling ✓  secrets unchanged · schedules +1/~0/−1",
+		"  restarting ✓  rolled 1 machine",
+		"published.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, out)
+		}
+	}
+}
+
+// A run recorded before the detail field existed still renders (no trailing blank detail).
+func TestPublishFollow_NoDetailIsBareMark(t *testing.T) {
+	t.Setenv("GOLEM_PUBLISH_POLL_MS", "1")
+	_, out, err := runCmd(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `{"ok":true,"publishing":true}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"runs":[{"id":"r1","status":"succeeded","phases":[{"key":"reconciling","status":"skipped"}]}]}`)
+	}, "publish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "  reconciling –\n") {
+		t.Errorf("expected bare mark line, got:\n%s", out)
+	}
+}
+
 // TestPublishNoWait proves --no-wait short-circuits before the follow loop: it
 // prints the "publishing" message and exits 0 without polling the run.
 func TestPublishNoWait(t *testing.T) {
@@ -428,6 +480,25 @@ func TestLogsCommand_DefaultStream(t *testing.T) {
 	}
 }
 
+// `golem logs --instance <machine id>` narrows the console snapshot to one Fly machine (a schedule
+// run's machine) — the only way a busy app machine can't push a job's lines out of the ~100-line window.
+func TestLogsCommand_InstanceFilter(t *testing.T) {
+	rec, _, err := runCmd(t, jsonResp(200, `{"status":"ok","rows":["[heartbeat] scraped=12"]}`), "logs", "--instance", "7811d49db5dee8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.path != "/api/v1/logs" || rec.query != "stream=console&instance=7811d49db5dee8" {
+		t.Errorf("got path=%q query=%q", rec.path, rec.query)
+	}
+}
+
+func TestLogsCommand_InstanceOnlyForConsole(t *testing.T) {
+	_, _, err := runCmd(t, jsonResp(200, `{"status":"ok","rows":[]}`), "logs", "--stream", "errors", "--instance", "abc")
+	if err == nil || !strings.Contains(err.Error(), "--instance") {
+		t.Fatalf("expected an --instance/stream error, got %v", err)
+	}
+}
+
 func TestLogsCommand_ErrorsStream(t *testing.T) {
 	rec, out, err := runCmd(t,
 		jsonResp(200, `{"status":"disabled","hint":"enable Sentry event:read"}`),
@@ -490,6 +561,61 @@ func TestSchedulesListCommand_Timeout(t *testing.T) {
 	}
 	if strings.Count(out, "timeout:") != 1 {
 		t.Errorf("only the overridden row should show a timeout = %q", out)
+	}
+}
+
+// `golem schedules runs [NAME] [--limit N] [--output]` — per run: schedule, status, exit, when,
+// duration, the IMAGE the run executed, and (with --output) its captured output tail. The answer to
+// "did my schedule run, on which code, and what did it print?" (2026-08-17 feedback).
+func TestSchedulesRunsCommand(t *testing.T) {
+	body := `{"runs":[
+		{"id":"r2","schedule":"heartbeat","status":"succeeded","exitCode":0,"image":"registry.fly.io/tools-reviewflow@sha256:86f8cbb452a16b4710ed1ab307f8da6256380c47b363aceba7f6066f06427581","machineId":"9185d547cd0183","startedAt":"2026-08-17T16:00:20.215Z","finishedAt":"2026-08-17T16:03:07.204Z","durationMs":166989,"error":null,"logTail":"[heartbeat] scraped=12\n[heartbeat] done"},
+		{"id":"r1","schedule":"nightly","status":"failed","exitCode":1,"image":null,"machineId":null,"startedAt":"2026-08-17T14:04:00.000Z","finishedAt":"2026-08-17T14:04:30.000Z","durationMs":30000,"error":"exit 1\nboom","logTail":"boom"}]}`
+	rec, out, err := runCmd(t, jsonResp(200, body), "schedules", "runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.method != "GET" || rec.path != "/api/v1/schedules/runs" || rec.query != "limit=20" {
+		t.Errorf("got %s %s?%s", rec.method, rec.path, rec.query)
+	}
+	for _, want := range []string{"heartbeat", "succeeded", "exit 0", "@86f8cbb4", "2m 47s", "2026-08-17 16:00:20 UTC", "nightly", "failed", "exit 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, out)
+		}
+	}
+	// Without --output the tail stays hidden; the failure's first error line shows with a hint.
+	if strings.Contains(out, "[heartbeat] scraped=12") || strings.Contains(out, "boom") {
+		t.Errorf("tail printed without --output:\n%s", out)
+	}
+	if !strings.Contains(out, "exit 1  (+1 more lines — `golem schedules runs nightly --output`)") {
+		t.Errorf("expected the failure reason + hint, got:\n%s", out)
+	}
+}
+
+func TestSchedulesRunsCommand_NameLimitOutput(t *testing.T) {
+	body := `{"runs":[{"id":"r2","schedule":"heartbeat","status":"succeeded","exitCode":0,"image":"registry.fly.io/tools-x@sha256:abcdef0123456789","machineId":"m1","startedAt":"2026-08-17T16:00:20.215Z","finishedAt":"2026-08-17T16:03:07.204Z","durationMs":166989,"error":null,"logTail":"[heartbeat] scraped=12\n[heartbeat] done"}]}`
+	rec, out, err := runCmd(t, jsonResp(200, body), "schedules", "runs", "heartbeat", "--limit", "5", "--output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.query != "limit=5&name=heartbeat" {
+		t.Errorf("query = %q", rec.query)
+	}
+	if !strings.Contains(out, "[heartbeat] scraped=12") || !strings.Contains(out, "[heartbeat] done") {
+		t.Errorf("expected the output tail with --output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "registry.fly.io/tools-x@sha256:abcdef0123456789") {
+		t.Errorf("expected the full image ref with --output, got:\n%s", out)
+	}
+}
+
+func TestSchedulesRunsCommand_Empty(t *testing.T) {
+	_, out, err := runCmd(t, jsonResp(200, `{"runs":[]}`), "schedules", "runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "no runs") {
+		t.Errorf("output = %q", out)
 	}
 }
 

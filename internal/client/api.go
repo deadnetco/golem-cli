@@ -40,6 +40,9 @@ type PublishPhase struct {
 	Status     string `json:"status"` // pending|running|done|skipped|failed
 	StartedAt  string `json:"startedAt"`
 	FinishedAt string `json:"finishedAt"`
+	// What the phase did on this run, one line ("built 3d10d05", "no changes", "rolled 1 machine").
+	// Empty on runs recorded before the server started writing it.
+	Detail string `json:"detail"`
 }
 
 // PublishRun is one element of GET /api/v1/publish.
@@ -94,6 +97,28 @@ type ScheduleRow struct {
 	TimeoutMs     *int    `json:"timeoutMs"`
 	LastRunStatus *string `json:"lastRunStatus"`
 	LastRunAt     *string `json:"lastRunAt"`
+}
+
+// ScheduleRun is one element of GET /api/v1/schedules/runs — one execution of a schedule.
+type ScheduleRun struct {
+	ID       string `json:"id"`
+	Schedule string `json:"schedule"`
+	Status   string `json:"status"` // running|succeeded|failed|interrupted
+	ExitCode *int   `json:"exitCode"`
+	// The exact image the run executed ("<registry>/<repo>@sha256:<digest>"), read live from the app
+	// machine at fire time. nil when the run never reached the image read.
+	Image      *string `json:"image"`
+	MachineID  *string `json:"machineId"`
+	StartedAt  string  `json:"startedAt"`
+	FinishedAt *string `json:"finishedAt"`
+	DurationMs *int    `json:"durationMs"`
+	Error      *string `json:"error"`
+	// Best-effort tail of the job's own output (chronological), captured for every finished run.
+	LogTail *string `json:"logTail"`
+}
+
+type scheduleRunsResponse struct {
+	Runs []ScheduleRun `json:"runs"`
 }
 
 // ScheduleSyncResult is POST /api/v1/schedules ({ ok, declared, added, updated, removed }).
@@ -232,15 +257,30 @@ func (c *Client) SchedulesList(ctx context.Context) ([]ScheduleRow, error) {
 	return rows, c.Do(ctx, "GET", "schedules", nil, &rows)
 }
 
+// SchedulesRuns lists the app's schedule run history, newest-first (optionally one schedule by name).
+func (c *Client) SchedulesRuns(ctx context.Context, name string, limit int) ([]ScheduleRun, error) {
+	var resp scheduleRunsResponse
+	path := fmt.Sprintf("schedules/runs?limit=%d", limit)
+	if name != "" {
+		path += "&name=" + Query(name)
+	}
+	return resp.Runs, c.Do(ctx, "GET", path, nil, &resp)
+}
+
 func (c *Client) SchedulesSync(ctx context.Context) (*ScheduleSyncResult, error) {
 	var r ScheduleSyncResult
 	return &r, c.Do(ctx, "POST", "schedules", nil, &r)
 }
 
-// Logs fetches a snapshot of the given stream (console | errors | ci).
-func (c *Client) Logs(ctx context.Context, stream string) (*LogStreamResult, error) {
+// Logs fetches a snapshot of the given stream (console | errors | ci). instance (console only)
+// narrows the snapshot to one Fly machine id — e.g. a schedule run's machine.
+func (c *Client) Logs(ctx context.Context, stream, instance string) (*LogStreamResult, error) {
 	var r LogStreamResult
-	return &r, c.Do(ctx, "GET", "logs?stream="+Query(stream), nil, &r)
+	path := "logs?stream=" + Query(stream)
+	if instance != "" {
+		path += "&instance=" + Query(instance)
+	}
+	return &r, c.Do(ctx, "GET", path, nil, &r)
 }
 
 // WebhooksList lists the app's inbound webhook endpoints (newest-first), each with its URL.
