@@ -45,7 +45,7 @@ Every command operates on the one app this `GOLEM_API_KEY` authorizes; `golem he
 - `golem config list | get KEY | set KEY=VALUE | rm KEY` — env vars (secret values never shown)
 - `golem env set KEY=VALUE` — alias of `config set`
 - `golem secret set KEY[=VALUE]` — stage a secret (value read from stdin if omitted); `golem secret rm KEY`
-- `golem config apply` — apply everything staged **without a rebuild** (= `publish --config-only`); follows the run like publish
+- `golem config apply` — apply everything staged **without a rebuild** (= `publish --config-only`); follows the run like publish; says "nothing staged" (no restart) when there is nothing to apply. ⚠️ `--apply` applies ALL of the app's staged changes, not only the one you just set
 - `--apply` on any `config/env/secret set` or `rm` — stage and apply in one command. Without it the CLI prints a hint; nothing is live until you apply or publish
 - **Dev** values are a separate set: `golem dev pull` writes them to `.env.golem` (see below)
 

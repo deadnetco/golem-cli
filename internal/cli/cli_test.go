@@ -442,9 +442,53 @@ func applyResp() func(http.ResponseWriter, *http.Request) {
 		case http.MethodPost:
 			_, _ = io.WriteString(w, `{"ok":true,"publishing":true}`)
 		default:
+			if r.URL.Path == "/api/v1/status" {
+				// `config apply` checks there is something staged before rolling the machine.
+				_, _ = io.WriteString(w, `{"status":"active","configDirtyCount":1,"codeDirty":false,"publishing":false}`)
+				return
+			}
 			_, _ = io.WriteString(w, `{"runs":[{"id":"r1","status":"succeeded","configOnly":true,
 				"phases":[{"key":"reconciling","status":"done","detail":"secrets +1/~0/−0"}]}]}`)
 		}
+	}
+}
+
+// `golem config apply` with NOTHING staged must not roll the production machine: it says so and
+// exits 0 without a publish request.
+func TestConfigApplyCommand_NothingStaged(t *testing.T) {
+	reqs, out, err := runCmdSeq(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/status" {
+			_, _ = io.WriteString(w, `{"status":"active","configDirtyCount":0,"codeDirty":true,"publishing":false}`)
+			return
+		}
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+	}, "config", "apply")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if len(reqs) != 1 || reqs[0].path != "/api/v1/status" {
+		t.Errorf("expected only the status read, got %+v", reqs)
+	}
+	if !strings.Contains(out, "nothing staged") {
+		t.Errorf("expected the nothing-staged message, got:\n%s", out)
+	}
+}
+
+// A mistyped leading-dash argument must never echo past the flag NAME (a secret value could follow
+// the '='), and `--apply=true` / a bare `--` are accepted like any Go/POSIX CLI.
+func TestTakeApply_NoSecretEcho_AndForms(t *testing.T) {
+	_, _, err := takeApply([]string{"-TOKEN=sk_live_verysecret"})
+	if err == nil || strings.Contains(err.Error(), "sk_live") || !strings.Contains(err.Error(), `"-TOKEN"`) {
+		t.Fatalf("expected an unknown-flag error naming only the flag, got %v", err)
+	}
+	rest, apply, err := takeApply([]string{"--apply=true", "FOO=bar"})
+	if err != nil || !apply || len(rest) != 1 || rest[0] != "FOO=bar" {
+		t.Fatalf("--apply=true: rest=%v apply=%v err=%v", rest, apply, err)
+	}
+	rest, apply, err = takeApply([]string{"--", "-weird=value"})
+	if err != nil || apply || len(rest) != 1 || rest[0] != "-weird=value" {
+		t.Fatalf("-- separator: rest=%v apply=%v err=%v", rest, apply, err)
 	}
 }
 
@@ -456,14 +500,17 @@ func TestConfigApplyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v\n%s", err, out)
 	}
-	if len(reqs) < 2 {
-		t.Fatalf("expected a POST then a follow GET, got %+v", reqs)
+	if len(reqs) < 3 {
+		t.Fatalf("expected a status GET, a POST, then a follow GET, got %+v", reqs)
 	}
-	if reqs[0].method != "POST" || reqs[0].path != "/api/v1/publish" || reqs[0].body["configOnly"] != true {
-		t.Errorf("first request = %+v, want POST /api/v1/publish {configOnly:true}", reqs[0])
+	if reqs[0].method != "GET" || reqs[0].path != "/api/v1/status" {
+		t.Errorf("first request = %+v, want the staged-anything check GET /api/v1/status", reqs[0])
 	}
-	if reqs[1].method != "GET" || reqs[1].path != "/api/v1/publish" {
-		t.Errorf("second request = %+v, want the follow GET", reqs[1])
+	if reqs[1].method != "POST" || reqs[1].path != "/api/v1/publish" || reqs[1].body["configOnly"] != true {
+		t.Errorf("second request = %+v, want POST /api/v1/publish {configOnly:true}", reqs[1])
+	}
+	if reqs[2].method != "GET" || reqs[2].path != "/api/v1/publish" {
+		t.Errorf("third request = %+v, want the follow GET", reqs[2])
 	}
 	for _, want := range []string{"applying staged config (no rebuild)", "reconciling ✓", "published."} {
 		if !strings.Contains(out, want) {

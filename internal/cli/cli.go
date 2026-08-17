@@ -379,6 +379,16 @@ func configApply(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Nothing staged → nothing to apply. A config-only publish still rolls the production machine,
+	// so refuse the pointless restart instead of doing it silently.
+	st, err := c.Status(ctx())
+	if err != nil {
+		return err
+	}
+	if st.ConfigDirtyCount == 0 {
+		fmt.Println("nothing staged — no config changes to apply (use `golem publish` to ship code, or `golem restart` to roll the machine).")
+		return nil
+	}
 	return publishAndFollow(c, client.PublishOpts{ConfigOnly: true}, *noWait)
 }
 
@@ -395,7 +405,14 @@ func finishStage(c *client.Client, what string, apply bool) error {
 		return nil
 	}
 	fmt.Printf("%s.\n", what)
-	return publishAndFollow(c, client.PublishOpts{ConfigOnly: true}, false)
+	// --apply applies EVERY staged change of the app (a config-only publish reconciles the whole
+	// staged set), not just this one — say so, so a teammate's half-staged edit isn't a surprise.
+	fmt.Println("applying all staged config for this app…")
+	if err := publishAndFollow(c, client.PublishOpts{ConfigOnly: true}, false); err != nil {
+		// The stage itself succeeded and is durable — make that unmissable.
+		return fmt.Errorf("%w\n(your change is still staged — retry with `golem config apply`, or `golem publish` to ship with code)", err)
+	}
+	return nil
 }
 
 // takeApply splits the optional --apply flag out of a staging command's arguments,
@@ -403,13 +420,25 @@ func finishStage(c *client.Client, what string, apply bool) error {
 // flag set would have to be told where the positionals stop — this is simpler and
 // accepts --apply on either side of the key.
 func takeApply(args []string) (rest []string, apply bool, err error) {
+	positional := false // after a bare "--" everything is positional (POSIX end-of-flags)
 	for _, a := range args {
+		if positional {
+			rest = append(rest, a)
+			continue
+		}
 		switch a {
-		case "--apply", "-apply":
+		case "--":
+			positional = true
+		case "--apply", "-apply", "--apply=true", "-apply=true":
 			apply = true
+		case "--apply=false", "-apply=false":
+			apply = false
 		default:
 			if strings.HasPrefix(a, "-") {
-				return nil, false, fmt.Errorf("unknown flag %q (only --apply is supported here)", a)
+				// Never echo the argument past its name: `golem secret set -TOKEN=sk_live_…` must not
+				// print the secret value to the terminal / CI log.
+				name := strings.SplitN(a, "=", 2)[0]
+				return nil, false, fmt.Errorf("unknown flag %q (only --apply is supported here)", name)
 			}
 			rest = append(rest, a)
 		}
@@ -1117,7 +1146,7 @@ Usage:
   golem config get KEY              print one entry
   golem config set KEY=VALUE        stage an env var   (--apply: apply it now, no rebuild)
   golem config rm KEY               stage a removal    (--apply too)
-  golem config apply                apply everything staged, without a rebuild (= publish --config-only)
+  golem config apply [--no-wait]    apply everything staged, without a rebuild (= publish --config-only); no-op when nothing is staged
   golem env set KEY=VALUE           alias of 'config set' (--apply too)
   golem secret set KEY[=VALUE]      stage a secret (value read from stdin if omitted; --apply too)
   golem secret rm KEY               stage a secret removal (--apply too)

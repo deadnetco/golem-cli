@@ -52,7 +52,7 @@ key; ask an admin to reissue, or restart the Codespace
 | `golem config list` | `GET /api/v1/config` | env + secret keys (secret values never returned) |
 | `golem config get KEY` | `GET /api/v1/config` (filtered client-side) | |
 | `golem config set KEY=VALUE [--apply]` | `PUT /api/v1/config` `{secret:false}` | staged; `--apply` immediately runs a config-only publish and follows it |
-| `golem config apply` | `POST /api/v1/publish` `{configOnly:true}` | apply everything staged, without a rebuild (same as `publish --config-only`) |
+| `golem config apply [--no-wait]` | `GET /api/v1/status` then `POST /api/v1/publish` `{configOnly:true}` | apply everything staged, without a rebuild (same as `publish --config-only`); a no-op message when nothing is staged |
 | `golem env set KEY=VALUE [--apply]` | alias of `config set` | |
 | `golem secret set KEY[=VALUE] [--apply]` | `PUT /api/v1/config` `{secret:true}` | value read from **stdin** when omitted (never required on argv) |
 | `golem secret rm KEY [--apply]` / `golem config rm KEY [--apply]` | `DELETE /api/v1/config?key=KEY` | stages a removal |
