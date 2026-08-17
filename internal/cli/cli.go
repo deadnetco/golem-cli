@@ -141,15 +141,32 @@ func cmdStatus(args []string) error {
 func cmdPublish(args []string) error {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	force := fs.Bool("force", false, "rebuild even if the repo HEAD matches the last built image")
+	configOnly := fs.Bool("config-only", false, "apply the staged config/secrets with no rebuild (same as `golem config apply`)")
 	noWait := fs.Bool("no-wait", false, "return immediately without following the publish")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// Contradictory: --force always rebuilds, --config-only never does. Reject the pair
+	// here so the user gets a usage error instead of the server's 400.
+	if *force && *configOnly {
+		return errors.New("--force and --config-only are mutually exclusive")
 	}
 	c, err := client.New()
 	if err != nil {
 		return err
 	}
-	r, err := c.Publish(ctx(), *force)
+	return publishAndFollow(c, client.PublishOpts{Force: *force, ConfigOnly: *configOnly}, *noWait)
+}
+
+// publishAndFollow starts a publish and (unless noWait) follows it to completion. A
+// config-only publish is the same call with a different opening line — it applies the
+// staged config/secrets and rolls, without rebuilding the image.
+func publishAndFollow(c *client.Client, opts client.PublishOpts, noWait bool) error {
+	started := "publishing…"
+	if opts.ConfigOnly {
+		started = "applying staged config (no rebuild)…"
+	}
+	r, err := c.Publish(ctx(), opts)
 	if err != nil {
 		return err
 	}
@@ -157,11 +174,11 @@ func cmdPublish(args []string) error {
 		fmt.Println("publish requested.")
 		return nil
 	}
-	if *noWait {
-		fmt.Println("publishing… (run `golem status` to check progress)")
+	if noWait {
+		fmt.Printf("%s (run `golem status` to check progress)\n", started)
 		return nil
 	}
-	fmt.Println("publishing…")
+	fmt.Println(started)
 	return followPublish(c)
 }
 
@@ -262,7 +279,7 @@ func cmdRestart(args []string) error {
 
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: golem config <list|get|set|rm> [...]")
+		return errors.New("usage: golem config <list|get|set|rm|apply> [...]")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -274,21 +291,23 @@ func cmdConfig(args []string) error {
 		return configSet(rest, false)
 	case "rm":
 		return configRemove(rest)
+	case "apply":
+		return configApply(rest)
 	default:
-		return fmt.Errorf("unknown config subcommand %q (want list|get|set|rm)", sub)
+		return fmt.Errorf("unknown config subcommand %q (want list|get|set|rm|apply)", sub)
 	}
 }
 
 func cmdEnv(args []string) error {
 	if len(args) == 0 || args[0] != "set" {
-		return errors.New("usage: golem env set KEY=VALUE")
+		return errors.New("usage: golem env set KEY=VALUE [--apply]")
 	}
 	return configSet(args[1:], false)
 }
 
 func cmdSecret(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: golem secret <set|rm> [...]")
+		return errors.New("usage: golem secret <set|rm> [...] [--apply]")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -345,11 +364,97 @@ func configGet(args []string) error {
 	return fmt.Errorf("no config entry %q", key)
 }
 
-func configSet(args []string, secret bool) error {
-	if len(args) != 1 {
-		return errors.New("usage: golem config set KEY=VALUE")
+// configApply is `golem config apply` — a memorable verb for a config-only publish:
+// it applies everything already staged (env, secrets, removals) with no rebuild.
+func configApply(args []string) error {
+	fs := flag.NewFlagSet("config apply", flag.ContinueOnError)
+	noWait := fs.Bool("no-wait", false, "return immediately without following the run")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	key, value, ok := strings.Cut(args[0], "=")
+	if fs.NArg() > 0 {
+		return fmt.Errorf("config apply takes no positional arguments (got %q)", strings.Join(fs.Args(), " "))
+	}
+	c, err := client.New()
+	if err != nil {
+		return err
+	}
+	// Nothing staged → nothing to apply. A config-only publish still rolls the production machine,
+	// so refuse the pointless restart instead of doing it silently.
+	st, err := c.Status(ctx())
+	if err != nil {
+		return err
+	}
+	if st.ConfigDirtyCount == 0 {
+		fmt.Println("nothing staged — no config changes to apply (use `golem publish` to ship code, or `golem restart` to roll the machine).")
+		return nil
+	}
+	return publishAndFollow(c, client.PublishOpts{ConfigOnly: true}, *noWait)
+}
+
+// stagedHint is the one-line nudge printed after a staged change when --apply was not
+// given: both ways to make it live, cheapest first.
+const stagedHint = "run `golem config apply` to apply now without a rebuild, or `golem publish` to ship with code."
+
+// finishStage closes out a staging command: without --apply it prints the hint; with it
+// the staged config is applied immediately by a config-only publish, followed to the end.
+// what is the staged-change description ("FOO staged", "TOK staged (secret)").
+func finishStage(c *client.Client, what string, apply bool) error {
+	if !apply {
+		fmt.Printf("%s — %s\n", what, stagedHint)
+		return nil
+	}
+	fmt.Printf("%s.\n", what)
+	// --apply applies EVERY staged change of the app (a config-only publish reconciles the whole
+	// staged set), not just this one — say so, so a teammate's half-staged edit isn't a surprise.
+	fmt.Println("applying all staged config for this app…")
+	if err := publishAndFollow(c, client.PublishOpts{ConfigOnly: true}, false); err != nil {
+		// The stage itself succeeded and is durable — make that unmissable.
+		return fmt.Errorf("%w\n(your change is still staged — retry with `golem config apply`, or `golem publish` to ship with code)", err)
+	}
+	return nil
+}
+
+// takeApply splits the optional --apply flag out of a staging command's arguments,
+// returning the positional args. These commands take a bare KEY / KEY=VALUE, so a
+// flag set would have to be told where the positionals stop — this is simpler and
+// accepts --apply on either side of the key.
+func takeApply(args []string) (rest []string, apply bool, err error) {
+	positional := false // after a bare "--" everything is positional (POSIX end-of-flags)
+	for _, a := range args {
+		if positional {
+			rest = append(rest, a)
+			continue
+		}
+		switch a {
+		case "--":
+			positional = true
+		case "--apply", "-apply", "--apply=true", "-apply=true":
+			apply = true
+		case "--apply=false", "-apply=false":
+			apply = false
+		default:
+			if strings.HasPrefix(a, "-") {
+				// Never echo the argument past its name: `golem secret set -TOKEN=sk_live_…` must not
+				// print the secret value to the terminal / CI log.
+				name := strings.SplitN(a, "=", 2)[0]
+				return nil, false, fmt.Errorf("unknown flag %q (only --apply is supported here)", name)
+			}
+			rest = append(rest, a)
+		}
+	}
+	return rest, apply, nil
+}
+
+func configSet(args []string, secret bool) error {
+	rest, apply, err := takeApply(args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return errors.New("usage: golem config set KEY=VALUE [--apply]")
+	}
+	key, value, ok := strings.Cut(rest[0], "=")
 	if !ok || key == "" {
 		return errors.New("expected KEY=VALUE")
 	}
@@ -360,17 +465,20 @@ func configSet(args []string, secret bool) error {
 	if _, err := c.ConfigSet(ctx(), key, value, secret); err != nil {
 		return err
 	}
-	fmt.Printf("%s staged — run `golem publish` to apply.\n", key)
-	return nil
+	return finishStage(c, key+" staged", apply)
 }
 
 // secretSet handles `golem secret set KEY[=VALUE]`: when VALUE is omitted the
 // secret is read from stdin so it never appears on argv (or in shell history).
 func secretSet(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: golem secret set KEY[=VALUE]  (value read from stdin if omitted)")
+	rest, apply, err := takeApply(args)
+	if err != nil {
+		return err
 	}
-	key, value, hasValue := strings.Cut(args[0], "=")
+	if len(rest) != 1 {
+		return errors.New("usage: golem secret set KEY[=VALUE] [--apply]  (value read from stdin if omitted)")
+	}
+	key, value, hasValue := strings.Cut(rest[0], "=")
 	if key == "" {
 		return errors.New("expected KEY or KEY=VALUE")
 	}
@@ -393,23 +501,25 @@ func secretSet(args []string) error {
 	if _, err := c.ConfigSet(ctx(), key, value, true); err != nil {
 		return err
 	}
-	fmt.Printf("%s staged (secret) — run `golem publish` to apply.\n", key)
-	return nil
+	return finishStage(c, key+" staged (secret)", apply)
 }
 
 func configRemove(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: golem config rm KEY")
+	rest, apply, err := takeApply(args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return errors.New("usage: golem config rm KEY [--apply]")
 	}
 	c, err := client.New()
 	if err != nil {
 		return err
 	}
-	if _, err := c.ConfigRemove(ctx(), args[0]); err != nil {
+	if _, err := c.ConfigRemove(ctx(), rest[0]); err != nil {
 		return err
 	}
-	fmt.Printf("%s removal staged — run `golem publish` to apply.\n", args[0])
-	return nil
+	return finishStage(c, rest[0]+" removal staged", apply)
 }
 
 // cmdDev dispatches the `dev` command. Today it has one subcommand, `pull`,
@@ -1028,15 +1138,18 @@ func usage() {
 Usage:
   golem whoami                      who am I + which app this key authorizes
   golem status                      publish state (config-dirty, code-dirty, publishing)
-  golem publish [--force] [--no-wait]  publish (follows to completion; --no-wait returns immediately)
+  golem publish [--force] [--config-only] [--no-wait]
+                                    publish (follows to completion; --no-wait returns immediately)
+                                    --config-only applies staged config with NO rebuild (not with --force)
   golem restart                     best-effort roll the app's machine
   golem config list                 list config entries (secret values never shown)
   golem config get KEY              print one entry
-  golem config set KEY=VALUE        stage an env var
-  golem config rm KEY               stage a removal
-  golem env set KEY=VALUE           alias of 'config set'
-  golem secret set KEY[=VALUE]      stage a secret (value read from stdin if omitted)
-  golem secret rm KEY               stage a secret removal
+  golem config set KEY=VALUE        stage an env var   (--apply: apply it now, no rebuild)
+  golem config rm KEY               stage a removal    (--apply too)
+  golem config apply [--no-wait]    apply everything staged, without a rebuild (= publish --config-only); no-op when nothing is staged
+  golem env set KEY=VALUE           alias of 'config set' (--apply too)
+  golem secret set KEY[=VALUE]      stage a secret (value read from stdin if omitted; --apply too)
+  golem secret rm KEY               stage a secret removal (--apply too)
   golem dev pull                    hydrate .env.golem with this app's dev values
   golem logs [--stream S] [--instance ID] [--follow]
                                     snapshot of the newest ~100 lines; S = console|errors|ci (default console);

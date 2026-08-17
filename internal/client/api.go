@@ -47,8 +47,11 @@ type PublishPhase struct {
 
 // PublishRun is one element of GET /api/v1/publish.
 type PublishRun struct {
-	ID         string         `json:"id"`
-	Status     string         `json:"status"` // pending|running|succeeded|failed|blocked|interrupted
+	ID     string `json:"id"`
+	Status string `json:"status"` // pending|running|succeeded|failed|blocked|interrupted
+	// True when the run was started as a config-only publish (staged config applied,
+	// no rebuild). False on runs recorded before the server started writing it.
+	ConfigOnly bool           `json:"configOnly"`
 	Phases     []PublishPhase `json:"phases"`
 	Error      string         `json:"error"`
 	BuildError string         `json:"buildError"`
@@ -206,9 +209,23 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	return &s, c.Do(ctx, "GET", "status", nil, &s)
 }
 
-func (c *Client) Publish(ctx context.Context, force bool) (*PublishResult, error) {
+// PublishOpts are the flags POST /api/v1/publish accepts. They are mutually
+// exclusive — the control plane 400s on both — so ConfigOnly wins the body and
+// force is left off entirely rather than sent as false.
+type PublishOpts struct {
+	// Force rebuilds even when the repo HEAD matches the last built image.
+	Force bool
+	// ConfigOnly applies the staged config/secrets with no rebuild.
+	ConfigOnly bool
+}
+
+func (c *Client) Publish(ctx context.Context, opts PublishOpts) (*PublishResult, error) {
 	var r PublishResult
-	return &r, c.Do(ctx, "POST", "publish", map[string]bool{"force": force}, &r)
+	body := map[string]bool{"force": opts.Force}
+	if opts.ConfigOnly {
+		body = map[string]bool{"configOnly": true}
+	}
+	return &r, c.Do(ctx, "POST", "publish", body, &r)
 }
 
 // Runs returns the app's newest publish runs (GET /api/v1/publish?limit=N), newest-first.

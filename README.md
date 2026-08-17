@@ -48,13 +48,14 @@ key; ask an admin to reissue, or restart the Codespace
 |---|---|---|
 | `golem whoami` | `GET /api/v1/whoami` | slug, owner, status, key name |
 | `golem status` | `GET /api/v1/status` | publish state: config-dirty count, code-dirty, publishing |
-| `golem publish [--force]` | `POST /api/v1/publish` | rebuild (if HEAD moved) + reconcile staged config + roll |
+| `golem publish [--force] [--config-only]` | `POST /api/v1/publish` | rebuild (if HEAD moved) + reconcile staged config + roll. `--config-only` posts `{configOnly:true}`: applies the staged config with **no rebuild** (mutually exclusive with `--force`) |
 | `golem config list` | `GET /api/v1/config` | env + secret keys (secret values never returned) |
 | `golem config get KEY` | `GET /api/v1/config` (filtered client-side) | |
-| `golem config set KEY=VALUE` | `PUT /api/v1/config` `{secret:false}` | staged — run `golem publish` |
-| `golem env set KEY=VALUE` | alias of `config set` | |
-| `golem secret set KEY[=VALUE]` | `PUT /api/v1/config` `{secret:true}` | value read from **stdin** when omitted (never required on argv) |
-| `golem secret rm KEY` / `golem config rm KEY` | `DELETE /api/v1/config?key=KEY` | stages a removal |
+| `golem config set KEY=VALUE [--apply]` | `PUT /api/v1/config` `{secret:false}` | staged; `--apply` immediately runs a config-only publish and follows it |
+| `golem config apply [--no-wait]` | `GET /api/v1/status` then `POST /api/v1/publish` `{configOnly:true}` | apply everything staged, without a rebuild (same as `publish --config-only`); a no-op message when nothing is staged |
+| `golem env set KEY=VALUE [--apply]` | alias of `config set` | |
+| `golem secret set KEY[=VALUE] [--apply]` | `PUT /api/v1/config` `{secret:true}` | value read from **stdin** when omitted (never required on argv) |
+| `golem secret rm KEY [--apply]` / `golem config rm KEY [--apply]` | `DELETE /api/v1/config?key=KEY` | stages a removal |
 | `golem logs [--stream console\|errors\|ci] [--instance ID] [--follow]` | `GET /api/v1/logs?stream=…&instance=…` | default `console`; `--instance` narrows console to one machine id; **`--follow` polls the snapshot** (see below) |
 | `golem schedules list` | `GET /api/v1/schedules` | golem.json-declared schedules (shows a per-schedule run timeout when set; default 15m) |
 | `golem schedules runs [NAME] [--limit N] [--output]` | `GET /api/v1/schedules/runs?name=…&limit=…` | run history newest-first: outcome, exit, when, duration, the image each run executed, machine id; `--output` adds each run's captured output tail + full image ref |
@@ -130,6 +131,24 @@ golem logs --stream errors
 golem schedules sync
 golem webhooks add Stripe /webhooks/stripe   # prints the URL to paste into Stripe
 ```
+
+### Change a prod variable (no rebuild)
+
+`config set` / `secret set` / `rm` only **stage** a change. To make it live without
+rebuilding the image, apply it — a config-only publish reconciles the staged
+config/secrets and rolls the machine:
+
+```sh
+golem config set LOG_LEVEL=debug --apply    # stage + apply in one command
+# …or stage a few, then apply them together:
+golem secret set STRIPE_KEY                 # value via stdin
+golem config rm OLD_FLAG
+golem config apply                          # == golem publish --config-only
+```
+
+`golem config apply` follows the run and prints the same phase lines as `golem publish`
+(the build phase is skipped). Use plain `golem publish` when you also want the new code
+shipped — that's the only path that rebuilds.
 
 ## Project layout
 

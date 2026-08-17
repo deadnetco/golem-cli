@@ -15,7 +15,7 @@ This app runs on the **golem** platform. You operate it with the **golem CLI** (
   - run pending `db/migrations/*.sql`,
   - apply staged config/secrets,
   - ONE rolling restart.
-- **Config & secrets are STAGED, not live.** `config`/`env`/`secret set` only stage a change; it takes effect only on the next `golem publish` (which restarts the app). `env` = plaintext; `secret` = encrypted, write-only, never shown again (keep your own copy).
+- **Config & secrets are STAGED, not live.** `config`/`env`/`secret set` change the app's **prod** values, but only stage them; they take effect when applied — either `golem config apply` (or `--apply` / `publish --config-only`): reconcile + restart with **no rebuild**, or the next full `golem publish` (ships code too). `env` = plaintext; `secret` = encrypted, write-only, never shown again (keep your own copy). **Dev** values are separate — `golem dev pull` hydrates them into `.env.golem`.
 - **Outbound is default-drop egress-locked in the kernel (nftables) — unbypassable**, even from your own code/shell/deps:
   - Private 6PN hosts (`DATABASE_URL`, `REDIS_URL`, LiteLLM gateway) work with zero config.
   - Every public host needs BOTH: route through `HTTPS_PROXY`/`HTTP_PROXY` AND an `external` egress grant for the exact bare host (Network tab; no scheme/port/path/wildcard). Grants are live immediately, no rebuild.
@@ -35,16 +35,19 @@ Check state anytime with `golem status`; snapshot logs with `golem logs [--strea
 Every command operates on the one app this `GOLEM_API_KEY` authorizes; `golem help` has the full flags.
 
 **Ship & inspect**
-- `golem publish [--force] [--no-wait]` — build-if-HEAD-moved → migrate → apply config → one restart
+- `golem publish [--force] [--config-only] [--no-wait]` — build-if-HEAD-moved → migrate → apply config → one restart. `--config-only` applies the staged config with **no rebuild** (can't be combined with `--force`)
 - `golem status` — anything to ship? (config-dirty / code-dirty / publishing)
 - `golem restart` — best-effort roll the app's machine
 - `golem whoami` — who am I + which app this key authorizes
 - `golem open` — print + open the app's public URL
 
-**Config & secrets** (staged; applied on the next publish)
+**Config & secrets** — these are the app's **prod** values; staged until applied
 - `golem config list | get KEY | set KEY=VALUE | rm KEY` — env vars (secret values never shown)
 - `golem env set KEY=VALUE` — alias of `config set`
 - `golem secret set KEY[=VALUE]` — stage a secret (value read from stdin if omitted); `golem secret rm KEY`
+- `golem config apply` — apply everything staged **without a rebuild** (= `publish --config-only`); follows the run like publish; says "nothing staged" (no restart) when there is nothing to apply. ⚠️ `--apply` applies ALL of the app's staged changes, not only the one you just set
+- `--apply` on any `config/env/secret set` or `rm` — stage and apply in one command. Without it the CLI prints a hint; nothing is live until you apply or publish
+- **Dev** values are a separate set: `golem dev pull` writes them to `.env.golem` (see below)
 
 **Schedules & webhooks** (declared in `golem.json`)
 - `golem schedules list | sync` — reconcile `golem.json` schedules @ HEAD
@@ -64,7 +67,7 @@ Every command operates on the one app this `GOLEM_API_KEY` authorizes; `golem he
 Full recipes/schemas live in `docs/builders/` (rendered at **/docs** in the golem panel). Don't inline their constants here — they drift.
 
 - **Deploying, publish flags, `status`, `restart`** → `docs/builders/deploying.md`
-- **`config` / `env` / `secret` (staging, stdin secrets), platform-managed vars** → `docs/builders/config-and-secrets.md`
+- **`config` / `env` / `secret` (staging, applying without a rebuild, stdin secrets), platform-managed vars** → `docs/builders/config-and-secrets.md`
 - **`golem.json` schema, `schedules list`/`sync`, cadence/target/`timeoutMinutes`/`memoryMb`/`size`** → `docs/builders/schedules.md`
 - **`webhooks add`/`list`/`rm`, signing (`X-Golem-*`, `GOLEM_WEBHOOK_SECRET`), body cap, reply window** → `docs/builders/webhooks.md`
 - **`dev pull` / `.env.golem`, dev parity** → `docs/builders/developing.md`

@@ -26,18 +26,32 @@ type recorded struct {
 }
 
 // runCmd points the CLI at a fake API (via GOLEM_API_URL), runs Run(args), and
-// returns the captured request, the command's stdout, and its error.
+// returns the LAST captured request, the command's stdout, and its error.
 func runCmd(t *testing.T, resp func(w http.ResponseWriter, r *http.Request), args ...string) (*recorded, string, error) {
 	t.Helper()
-	rec := &recorded{}
+	reqs, out, err := runCmdSeq(t, resp, args...)
+	if len(reqs) == 0 {
+		return &recorded{}, out, err
+	}
+	return &reqs[len(reqs)-1], out, err
+}
+
+// runCmdSeq is runCmd for commands that issue MORE than one request (stage → apply):
+// it returns every request in the order it was made, so a test can assert the sequence.
+func runCmdSeq(t *testing.T, resp func(w http.ResponseWriter, r *http.Request), args ...string) ([]recorded, string, error) {
+	t.Helper()
+	var reqs []recorded
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec.method = r.Method
-		rec.path = r.URL.Path
-		rec.query = r.URL.RawQuery
-		rec.auth = r.Header.Get("Authorization")
+		rec := recorded{
+			method: r.Method,
+			path:   r.URL.Path,
+			query:  r.URL.RawQuery,
+			auth:   r.Header.Get("Authorization"),
+		}
 		if b, _ := io.ReadAll(r.Body); len(b) > 0 {
 			_ = json.Unmarshal(b, &rec.body)
 		}
+		reqs = append(reqs, rec)
 		resp(w, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -46,7 +60,7 @@ func runCmd(t *testing.T, resp func(w http.ResponseWriter, r *http.Request), arg
 	t.Setenv("GOLEM_API_URL", srv.URL)
 
 	out := captureStdout(t, func() error { return Run(args, "v9.9.9") })
-	return rec, out.text, out.err
+	return reqs, out.text, out.err
 }
 
 type outResult struct {
@@ -200,6 +214,47 @@ func TestPublishCommand_DefaultNotForced(t *testing.T) {
 	}
 }
 
+// `golem publish --config-only` applies the staged config with no rebuild: it posts
+// {"configOnly":true} (and never force — the control plane 400s on both).
+func TestPublishCommand_ConfigOnly(t *testing.T) {
+	rec, out, err := runCmd(t, jsonResp(200, `{"ok":true,"publishing":true}`),
+		"publish", "--config-only", "--no-wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.method != "POST" || rec.path != "/api/v1/publish" {
+		t.Errorf("got %s %s", rec.method, rec.path)
+	}
+	if rec.body["configOnly"] != true {
+		t.Errorf("configOnly = %v, want true", rec.body["configOnly"])
+	}
+	if _, ok := rec.body["force"]; ok {
+		t.Errorf("body = %+v, want no force key alongside configOnly", rec.body)
+	}
+	if !strings.Contains(out, "no rebuild") {
+		t.Errorf("output = %q, want the no-rebuild wording", out)
+	}
+}
+
+// --force and --config-only contradict each other; the CLI rejects the combination
+// before making any request (the server would 400 anyway).
+func TestPublishCommand_ForceAndConfigOnlyConflict(t *testing.T) {
+	called := false
+	_, _, err := runCmd(t, func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = io.WriteString(w, `{}`)
+	}, "publish", "--force", "--config-only")
+	if err == nil {
+		t.Fatal("expected a usage error for --force with --config-only")
+	}
+	if !strings.Contains(err.Error(), "--config-only") || !strings.Contains(err.Error(), "--force") {
+		t.Errorf("err = %q, want it to name both flags", err.Error())
+	}
+	if called {
+		t.Error("should not have made a request for a contradictory flag pair")
+	}
+}
+
 // TestPublishFollow_FailedPrintsBuildError scripts POST publish → {publishing:true},
 // then GET publish?limit=1 → a terminal failed run carrying a buildError tail. The
 // default (follow) path must poll the run, print the error + build-output tail, and
@@ -315,6 +370,23 @@ func TestConfigListCommand(t *testing.T) {
 	}
 }
 
+// config list renders the row state as trailing tags and NEVER a secret's value
+// (the API returns null for it; the CLI must not invent or echo one).
+func TestConfigListCommand_SecretValueNeverPrinted(t *testing.T) {
+	_, out, err := runCmd(t,
+		jsonResp(200, `[{"key":"TOK","secret":true,"value":null,"published":true,"dirty":true,"pendingRemoval":false}]`),
+		"config", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "TOK=(secret)") {
+		t.Errorf("output = %q, want the masked secret row", out)
+	}
+	if !strings.Contains(out, "[secret, staged]") {
+		t.Errorf("output = %q, want the trailing state tags", out)
+	}
+}
+
 func TestConfigGetCommand_FiltersClientSide(t *testing.T) {
 	rec, out, err := runCmd(t,
 		jsonResp(200, `[{"key":"FOO","secret":false,"value":"bar","published":true,"dirty":false,"pendingRemoval":false},
@@ -355,6 +427,162 @@ func TestConfigSetCommand(t *testing.T) {
 	}
 	if !strings.Contains(out, "staged") || !strings.Contains(out, "publish") {
 		t.Errorf("output = %q", out)
+	}
+}
+
+// applyResp answers every request a "stage then apply" flow makes: the PUT/DELETE that
+// stages, the POST that starts the config-only publish, and the GET the follow loop polls
+// (a terminal succeeded run).
+func applyResp() func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPut, http.MethodDelete:
+			_, _ = io.WriteString(w, `{"ok":true,"staged":true}`)
+		case http.MethodPost:
+			_, _ = io.WriteString(w, `{"ok":true,"publishing":true}`)
+		default:
+			if r.URL.Path == "/api/v1/status" {
+				// `config apply` checks there is something staged before rolling the machine.
+				_, _ = io.WriteString(w, `{"status":"active","configDirtyCount":1,"codeDirty":false,"publishing":false}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"runs":[{"id":"r1","status":"succeeded","configOnly":true,
+				"phases":[{"key":"reconciling","status":"done","detail":"secrets +1/~0/−0"}]}]}`)
+		}
+	}
+}
+
+// `golem config apply` with NOTHING staged must not roll the production machine: it says so and
+// exits 0 without a publish request.
+func TestConfigApplyCommand_NothingStaged(t *testing.T) {
+	reqs, out, err := runCmdSeq(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/status" {
+			_, _ = io.WriteString(w, `{"status":"active","configDirtyCount":0,"codeDirty":true,"publishing":false}`)
+			return
+		}
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+	}, "config", "apply")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if len(reqs) != 1 || reqs[0].path != "/api/v1/status" {
+		t.Errorf("expected only the status read, got %+v", reqs)
+	}
+	if !strings.Contains(out, "nothing staged") {
+		t.Errorf("expected the nothing-staged message, got:\n%s", out)
+	}
+}
+
+// A mistyped leading-dash argument must never echo past the flag NAME (a secret value could follow
+// the '='), and `--apply=true` / a bare `--` are accepted like any Go/POSIX CLI.
+func TestTakeApply_NoSecretEcho_AndForms(t *testing.T) {
+	_, _, err := takeApply([]string{"-TOKEN=sk_live_verysecret"})
+	if err == nil || strings.Contains(err.Error(), "sk_live") || !strings.Contains(err.Error(), `"-TOKEN"`) {
+		t.Fatalf("expected an unknown-flag error naming only the flag, got %v", err)
+	}
+	rest, apply, err := takeApply([]string{"--apply=true", "FOO=bar"})
+	if err != nil || !apply || len(rest) != 1 || rest[0] != "FOO=bar" {
+		t.Fatalf("--apply=true: rest=%v apply=%v err=%v", rest, apply, err)
+	}
+	rest, apply, err = takeApply([]string{"--", "-weird=value"})
+	if err != nil || apply || len(rest) != 1 || rest[0] != "-weird=value" {
+		t.Fatalf("-- separator: rest=%v apply=%v err=%v", rest, apply, err)
+	}
+}
+
+// `golem config apply` is the memorable verb for a config-only publish: POST
+// {"configOnly":true} then follow the run to completion.
+func TestConfigApplyCommand(t *testing.T) {
+	t.Setenv("GOLEM_PUBLISH_POLL_MS", "1")
+	reqs, out, err := runCmdSeq(t, applyResp(), "config", "apply")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if len(reqs) < 3 {
+		t.Fatalf("expected a status GET, a POST, then a follow GET, got %+v", reqs)
+	}
+	if reqs[0].method != "GET" || reqs[0].path != "/api/v1/status" {
+		t.Errorf("first request = %+v, want the staged-anything check GET /api/v1/status", reqs[0])
+	}
+	if reqs[1].method != "POST" || reqs[1].path != "/api/v1/publish" || reqs[1].body["configOnly"] != true {
+		t.Errorf("second request = %+v, want POST /api/v1/publish {configOnly:true}", reqs[1])
+	}
+	if reqs[2].method != "GET" || reqs[2].path != "/api/v1/publish" {
+		t.Errorf("third request = %+v, want the follow GET", reqs[2])
+	}
+	for _, want := range []string{"applying staged config (no rebuild)", "reconciling ✓", "published."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, out)
+		}
+	}
+}
+
+// `golem config set KEY=VALUE --apply` stages (PUT) and then immediately applies the
+// staged config with a config-only publish, following it to completion.
+func TestConfigSetCommand_Apply(t *testing.T) {
+	t.Setenv("GOLEM_PUBLISH_POLL_MS", "1")
+	reqs, out, err := runCmdSeq(t, applyResp(), "config", "set", "FOO=bar", "--apply")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if len(reqs) < 3 {
+		t.Fatalf("expected PUT → POST → GET, got %+v", reqs)
+	}
+	if reqs[0].method != "PUT" || reqs[0].path != "/api/v1/config" || reqs[0].body["key"] != "FOO" {
+		t.Errorf("first request = %+v, want the staging PUT", reqs[0])
+	}
+	if reqs[1].method != "POST" || reqs[1].path != "/api/v1/publish" || reqs[1].body["configOnly"] != true {
+		t.Errorf("second request = %+v, want POST /api/v1/publish {configOnly:true}", reqs[1])
+	}
+	if !strings.Contains(out, "published.") {
+		t.Errorf("expected the followed run to finish, got:\n%s", out)
+	}
+}
+
+// Without --apply the change is only STAGED — the CLI prints the one-line hint naming
+// both ways to apply it (config apply = now, no rebuild; publish = ship with code).
+func TestConfigSetCommand_StagedHintWithoutApply(t *testing.T) {
+	reqs, out, err := runCmdSeq(t, jsonResp(200, `{"ok":true,"staged":true}`), "config", "set", "FOO=bar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0].method != "PUT" {
+		t.Fatalf("staging alone should make exactly one PUT, got %+v", reqs)
+	}
+	for _, want := range []string{"staged", "golem config apply", "golem publish"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the hint, got: %q", want, out)
+		}
+	}
+}
+
+func TestSecretSetCommand_Apply(t *testing.T) {
+	t.Setenv("GOLEM_PUBLISH_POLL_MS", "1")
+	reqs, out, err := runCmdSeq(t, applyResp(), "secret", "set", "TOK=shh", "--apply")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if len(reqs) < 2 || reqs[0].body["secret"] != true {
+		t.Fatalf("first request should stage the secret, got %+v", reqs)
+	}
+	if reqs[1].method != "POST" || reqs[1].body["configOnly"] != true {
+		t.Errorf("second request = %+v, want the config-only publish", reqs[1])
+	}
+}
+
+func TestConfigRmCommand_Apply(t *testing.T) {
+	t.Setenv("GOLEM_PUBLISH_POLL_MS", "1")
+	reqs, out, err := runCmdSeq(t, applyResp(), "config", "rm", "FOO", "--apply")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if len(reqs) < 2 || reqs[0].method != "DELETE" || reqs[0].query != "key=FOO" {
+		t.Fatalf("first request should stage the removal, got %+v", reqs)
+	}
+	if reqs[1].method != "POST" || reqs[1].body["configOnly"] != true {
+		t.Errorf("second request = %+v, want the config-only publish", reqs[1])
 	}
 }
 

@@ -169,7 +169,7 @@ func TestStatus(t *testing.T) {
 
 func TestPublish_BodyAndForce(t *testing.T) {
 	c, cap := newTestClient(t, jsonHandler(200, `{"ok":true,"publishing":true}`))
-	r, err := c.Publish(context.Background(), true)
+	r, err := c.Publish(context.Background(), PublishOpts{Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,14 +179,35 @@ func TestPublish_BodyAndForce(t *testing.T) {
 	if cap.body["force"] != true {
 		t.Errorf("body force = %v, want true", cap.body["force"])
 	}
+	if _, ok := cap.body["configOnly"]; ok {
+		t.Errorf("body = %+v, want no configOnly key on a normal publish", cap.body)
+	}
 	if !r.Publishing {
 		t.Error("want publishing true")
 	}
 }
 
+// A config-only publish posts {"configOnly":true} and must NOT also carry force —
+// the control plane 400s on both flags together.
+func TestPublish_ConfigOnlyBody(t *testing.T) {
+	c, cap := newTestClient(t, jsonHandler(200, `{"ok":true,"publishing":true}`))
+	if _, err := c.Publish(context.Background(), PublishOpts{ConfigOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	if cap.method != "POST" || cap.path != "/api/v1/publish" {
+		t.Errorf("got %s %s", cap.method, cap.path)
+	}
+	if cap.body["configOnly"] != true {
+		t.Errorf("body configOnly = %v, want true", cap.body["configOnly"])
+	}
+	if _, ok := cap.body["force"]; ok {
+		t.Errorf("body = %+v, want no force key alongside configOnly", cap.body)
+	}
+}
+
 func TestRuns(t *testing.T) {
 	c, cap := newTestClient(t, jsonHandler(200, `{"runs":[
-		{"id":"r1","status":"failed","error":"build failed (exit 1)","buildError":"webhook.ts:168 ERROR","phases":[{"key":"building","status":"failed"}],"builtSha":"","startedAt":"2026-06-29T09:45:00Z","finishedAt":"2026-06-29T09:48:00Z","durationMs":180000}
+		{"id":"r1","status":"failed","configOnly":false,"error":"build failed (exit 1)","buildError":"webhook.ts:168 ERROR","phases":[{"key":"building","status":"failed"}],"builtSha":"","startedAt":"2026-06-29T09:45:00Z","finishedAt":"2026-06-29T09:48:00Z","durationMs":180000}
 	]}`))
 	runs, err := c.Runs(context.Background(), 1)
 	if err != nil {
@@ -200,6 +221,19 @@ func TestRuns(t *testing.T) {
 	}
 	if len(runs[0].Phases) != 1 || runs[0].Phases[0].Key != "building" {
 		t.Fatalf("unexpected phases: %+v", runs[0].Phases)
+	}
+}
+
+// A run started by a config-only publish carries configOnly:true.
+func TestRuns_ConfigOnly(t *testing.T) {
+	c, _ := newTestClient(t, jsonHandler(200,
+		`{"runs":[{"id":"r2","status":"succeeded","configOnly":true,"phases":[{"key":"reconciling","status":"done"}]}]}`))
+	runs, err := c.Runs(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("Runs: %v", err)
+	}
+	if len(runs) != 1 || !runs[0].ConfigOnly {
+		t.Fatalf("runs = %+v, want ConfigOnly true", runs)
 	}
 }
 
