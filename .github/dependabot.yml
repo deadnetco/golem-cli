@@ -1,0 +1,24 @@
+# Drift guard. Deliberately covers ONLY `docker` and `github-actions`.
+#
+# Chosen from evidence, not preference: sort the 2026-08-19 dependency audit’s findings by how long
+# each rotted undetected and the split is stark — EOL Go/Alpine in the credential proxy (~18 months),
+# paketo bases frozen for months, `crane:debug` never pinned at all, node20 actions on a removal
+# deadline. Every one of those is a base image or an action, which NO existing gate touches. Every
+# npm finding, by contrast, was weeks old at most, because `pnpm typecheck|lint|test|build` already
+# catch those.
+#
+# So an `npm` ecosystem here would add weekly PRs the gates already validate, plus noise from pins
+# that must NOT float (the `ioredis` override, the tilde-pinned drizzle/next) — which is how a team
+# learns to auto-merge or ignore Dependabot, and the guard stops working.
+#
+# Monthly + grouped + one open PR keeps this under ~12 PRs a year per repo.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 1
